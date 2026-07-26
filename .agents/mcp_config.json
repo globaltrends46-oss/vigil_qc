@@ -1,0 +1,44 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-playwright"
+      ],
+      "description": "Headed browser automation, interactive form filling, and live DOM interaction."
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "description": "Repository management, PR generation, and issue tracking."
+    },
+    "supabase": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-supabase"
+      ],
+      "description": "Live database schema management, table queries, and user authentication checks."
+    },
+    "magic-21st": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@21st-dev/magic-mcp"
+      ],
+      "description": "Direct UI design system and React/Tailwind component fetching."
+    },
+    "brave-search": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-brave-search"
+      ],
+      "description": "Real-time web research, documentation retrieval, and SEO keyword analysis."
+    }
+  }
+}

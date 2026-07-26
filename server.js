@@ -1,0 +1,1995 @@
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const dotenv = require('dotenv');
+
+// Polyfill WebSocket for Supabase on older Node environments
+if (!global.WebSocket) {
+  global.WebSocket = require('ws');
+}
+
+const { createClient } = require('@supabase/supabase-js');
+const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
+const fetch = require('node-fetch');
+const mammoth = require('mammoth');
+const pdfParse = require('pdf-parse');
+const AdmZip = require('adm-zip');
+
+// Load environment variables
+dotenv.config();
+
+async function callLLM(model, systemPrompt, userPrompt) {
+  const omniGatewayUrl = process.env.OMNIROUTE_URL || 'http://localhost:20128/v1/chat/completions';
+  try {
+    const response = await fetch(omniGatewayUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY || 'sk-omniroute-key'}`
+      },
+      body: JSON.stringify({
+        model: model || "omniroute-auto",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ]
+      })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data.choices && data.choices[0] && data.choices[0].message) {
+        return data.choices[0].message.content;
+      }
+    }
+  } catch (err) {
+    console.warn(`[OmniRoute Gateway] Router at http://localhost:20128 unavailable: ${err.message}`);
+  }
+
+  return await callLLMWithMeta(model, systemPrompt, userPrompt);
+}
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Incoming request logger middleware
+app.use((req, res, next) => {
+  console.log(`[VIGIL REQUEST] ${new Date().toISOString()} - ${req.method} ${req.url}`);
+  next();
+});
+
+// Serve frontend static assets from public folder
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Configure Multer for file memory storage
+const upload = multer({
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB file limit
+});
+
+// Initialize Supabase Client
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+if (!supabaseUrl || !supabaseKey) {
+  console.error("CRITICAL: SUPABASE_URL or SUPABASE_KEY missing in .env config");
+  process.exit(1);
+}
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Inject NotebookLM Cookie
+if (process.env.NOTEBOOKLM_COOKIE) {
+  const os = require('os');
+  const notebookLmProfileDir = path.join(os.homedir(), '.notebooklm', 'profiles', 'default');
+  fs.mkdirSync(notebookLmProfileDir, { recursive: true });
+  const storageState = {
+    cookies: [
+      {
+        name: "_Secure-1PSID",
+        value: process.env.NOTEBOOKLM_COOKIE.trim(),
+        domain: ".google.com",
+        path: "/",
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+        sameSite: "None"
+      }
+    ],
+    origins: []
+  };
+  fs.writeFileSync(path.join(notebookLmProfileDir, 'storage_state.json'), JSON.stringify(storageState));
+  console.log("Injected NotebookLM cookie from environment variable.");
+}
+
+// ==========================================
+// 1. UNIVERSAL CONTENT WORD COUNT PARSING
+// ==========================================
+
+function countWords(text) {
+  if (!text) return 0;
+  const clean = text.trim();
+  if (clean === '') return 0;
+  return clean.split(/\s+/).length;
+}
+
+// Extract formatting properties from .docx archive XML structures directly
+function extractDocxMetadata(buffer) {
+  let spacing = "Single Spacing";
+  let alignment = "Left Alignment";
+  
+  try {
+    const zip = new AdmZip(buffer);
+    const docXmlEntry = zip.getEntry('word/document.xml');
+    if (docXmlEntry) {
+      const xml = docXmlEntry.getData().toString('utf8');
+      
+      // Look for line spacing: w:line="480" (Double) vs w:line="240" (Single)
+      const spacingMatch = xml.match(/<w:spacing[^>]*w:line="(\d+)"/);
+      if (spacingMatch) {
+        const lineVal = parseInt(spacingMatch[1], 10);
+        if (lineVal >= 360) {
+          spacing = "Double Spacing";
+        } else if (lineVal >= 280) {
+          spacing = "1.5 Spacing";
+        }
+      }
+      
+      // Look for alignment: <w:jc w:val="both"/> (justified)
+      const alignMatch = xml.match(/<w:jc[^>]*w:val="([^"]+)"/);
+      if (alignMatch) {
+        const alignVal = alignMatch[1];
+        if (alignVal === 'both') {
+          alignment = "Justified";
+        } else if (alignVal === 'center') {
+          alignment = "Centered";
+        } else if (alignVal === 'right') {
+          alignment = "Right Alignment";
+        } else {
+          alignment = "Left Alignment";
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Failed to parse docx XML styles:", err.message);
+  }
+  
+  return { spacing, alignment };
+}
+
+// Fragment submission draft into isolated sections based on heading matching
+function fragmentSections(text) {
+  const headers = ["Introduction", "Literature Review", "Methodology", "Findings", "Discussion", "Conclusion"];
+  const lines = text.split('\n');
+  const sections = {};
+  let currentHeader = "General";
+  sections[currentHeader] = [];
+  
+  for (const line of lines) {
+    const trimmed = line.trim();
+    let isHeader = false;
+    for (const h of headers) {
+      const cleanedH = h.toLowerCase();
+      // Remove symbols like "1. ", "## " to compare heading names cleanly
+      const cleanedLine = trimmed.toLowerCase().replace(/^[\d\.#\s\-]+/, '').trim();
+      if (cleanedLine === cleanedH || cleanedLine.startsWith(cleanedH + " ")) {
+        currentHeader = h;
+        sections[currentHeader] = [];
+        isHeader = true;
+        break;
+      }
+    }
+    if (!isHeader) {
+      sections[currentHeader].push(line);
+    }
+  }
+  
+  const result = {};
+  for (const key in sections) {
+    const sectionText = sections[key].join('\n').trim();
+    result[key] = {
+      text: sectionText,
+      wordCount: countWords(sectionText)
+    };
+  }
+  return result;
+}
+
+// Call OpenRouter to parse dynamic word count distributions from the brief instructions
+async function extractBriefSectionDistribution(briefText) {
+  try {
+    const systemPrompt = `You are a VIGIL Brief Parameter Extractor. Read the assignment brief guidelines and extract the percentage word count targets or absolute word count targets allocated for each section: "Introduction", "Literature Review", "Findings" (or Methodology/Discussion), and "Conclusion". 
+Return ONLY a valid JSON object mapping the section names to their percentage targets of the total document length (numbers between 0 and 100). Ensure the sum of percentages is 100 (adjust proportionally if needed). If a section is not mentioned, make a standard scholarly assignment distribution assumption:
+{
+  "Introduction": 10,
+  "Literature Review": 30,
+  "Findings": 50,
+  "Conclusion": 10
+}
+Do not output any markdown formatting, explanation, or comments. Just the raw JSON.`;
+    
+    const response = await callLLM("meta-llama/llama-3.3-70b-instruct:free", systemPrompt, `Brief: "${briefText}"`);
+    const cleanJson = response.replace(/```json/g, '').replace(/```/g, '').trim();
+    return JSON.parse(cleanJson);
+  } catch (err) {
+    console.warn("Failed to extract brief section targets, falling back to defaults:", err.message);
+    return {
+      "Introduction": 10,
+      "Literature Review": 30,
+      "Findings": 50,
+      "Conclusion": 10
+    };
+  }
+}
+
+async function extractZipWords(buffer) {
+  let totalWords = 0;
+  let textParts = [];
+  const zip = new AdmZip(buffer);
+  const entries = zip.getEntries();
+
+  for (const entry of entries) {
+    if (entry.isDirectory) continue;
+    const name = entry.entryName.toLowerCase();
+    const fileExt = name.split('.').pop();
+    const fileBuffer = entry.getData();
+
+    if (['txt', 'md', 'py', 'js', 'html', 'css', 'json', 'csv', 'xml', 'ts', 'go', 'rs', 'c', 'cpp'].includes(fileExt)) {
+      const text = fileBuffer.toString('utf8');
+      totalWords += countWords(text);
+      textParts.push(`--- FILE: ${entry.entryName} ---\n${text}`);
+    } else if (fileExt === 'docx') {
+      try {
+        const result = await mammoth.extractRawText({ buffer: fileBuffer });
+        totalWords += countWords(result.value);
+        textParts.push(`--- FILE: ${entry.entryName} ---\n${result.value}`);
+      } catch (err) {
+        console.error(`Error parsing internal docx: ${entry.entryName}`, err);
+      }
+    } else if (fileExt === 'pdf') {
+      try {
+        const result = await pdfParse(fileBuffer);
+        totalWords += countWords(result.text);
+        textParts.push(`--- FILE: ${entry.entryName} ---\n${result.text}`);
+      } catch (err) {
+        console.error(`Error parsing internal pdf: ${entry.entryName}`, err);
+      }
+    }
+  }
+  return { wordCount: totalWords, textContent: textParts.join('\n\n') };
+}
+
+async function transcribeMultimodalOpenRouter(base64Data, mimeType, dataType) {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENROUTER_API_KEY is not defined in the backend environment");
+  }
+
+  const model = "openrouter/free";
+  let content = [];
+  
+  if (dataType === 'image') {
+    content = [
+      { type: "text", text: "Read the following image forensically. Extract all text, descriptions, charts, tables, numbers, and data points present in this document page in full detail." },
+      {
+        type: "image_url",
+        image_url: {
+          url: `data:${mimeType};base64,${base64Data}`
+        }
+      }
+    ];
+  } else {
+    const format = mimeType.split('/').pop();
+    content = [
+      { type: "text", text: "Transcribe the audio speech content of this file in full verbatim text. Do not summarize or skip anything." },
+      {
+        type: "input_audio",
+        input_audio: {
+          data: base64Data,
+          format: format
+        }
+      }
+    ];
+  }
+
+  const maxRetries = 3;
+  let attempt = 0;
+  let delay = 1000;
+
+  while (attempt < maxRetries) {
+    try {
+      console.log(`[API REQUEST] Multimodal Transcribe - Attempt ${attempt + 1}/${maxRetries}`);
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://vigilqc.com",
+          "X-Title": "Vigil QC",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            { role: "user", content: content }
+          ],
+          temperature: 0.1
+        }),
+        timeout: 60000 // 60s timeout for media transcribing
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`OpenRouter Multimodal HTTP ${response.status}: ${errText}`);
+      }
+
+      const data = await response.json();
+      if (!data.choices || data.choices.length === 0) {
+        throw new Error("OpenRouter Multimodal returned empty completions");
+      }
+
+      return data.choices[0].message.content;
+    } catch (err) {
+      attempt++;
+      console.warn(`[API WARNING] Multimodal attempt ${attempt} failed: ${err.message}`);
+      if (attempt >= maxRetries) {
+        throw err;
+      }
+      await new Promise(resolve => setTimeout(resolve, delay));
+      delay *= 2;
+    }
+  }
+}
+
+function sanitizeForPostgres(str) {
+  if (typeof str !== 'string') return str;
+  return str.replace(/\0/g, '').replace(/\\u0000/g, '').replace(/\x00/g, '');
+}
+
+function sanitizeObjectForPostgres(obj) {
+  if (!obj) return obj;
+  if (typeof obj === 'string') {
+    return sanitizeForPostgres(obj);
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => sanitizeObjectForPostgres(item));
+  }
+  if (typeof obj === 'object') {
+    const cleaned = {};
+    for (const key in obj) {
+      cleaned[key] = sanitizeObjectForPostgres(obj[key]);
+    }
+    return cleaned;
+  }
+  return obj;
+}
+
+async function parseDocument(fileBuffer, fileName) {
+  const ext = fileName.split('.').pop().toLowerCase();
+  let text = '';
+  let wordCount = 0;
+
+  if (ext === 'docx') {
+    const result = await mammoth.extractRawText({ buffer: fileBuffer });
+    text = result.value;
+    wordCount = countWords(text);
+  } else if (ext === 'pdf') {
+    const result = await pdfParse(fileBuffer);
+    text = result.text;
+    wordCount = countWords(text);
+  } else if (ext === 'zip' || ext === 'epub') {
+    const zipResult = await extractZipWords(fileBuffer);
+    text = zipResult.textContent;
+    wordCount = zipResult.wordCount;
+  } else if (ext === 'png' || ext === 'jpg' || ext === 'jpeg') {
+    const base64 = fileBuffer.toString('base64');
+    const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
+    console.log(`Transcribing image text via OpenRouter: ${fileName}...`);
+    text = await transcribeMultimodalOpenRouter(base64, mime, 'image');
+    wordCount = countWords(text);
+  } else if (ext === 'mp3' || ext === 'wav') {
+    const base64 = fileBuffer.toString('base64');
+    const mime = ext === 'mp3' ? 'audio/mp3' : 'audio/wav';
+    console.log(`Transcribing audio lecture via OpenRouter: ${fileName}...`);
+    text = await transcribeMultimodalOpenRouter(base64, mime, 'audio');
+    wordCount = countWords(text);
+  } else {
+    // Default to plain text parsing
+    text = fileBuffer.toString('utf8');
+    wordCount = countWords(text);
+  }
+
+  text = sanitizeForPostgres(text);
+  return { text, wordCount };
+}
+
+// ==========================================
+// 1.5. UNOFFICIAL GOOGLE NOTEBOOKLM INTEGRATION
+// ==========================================
+
+const { execFile } = require('child_process');
+
+function runCLISafe(args) {
+  return new Promise((resolve, reject) => {
+    console.log(`[NotebookLM] Executing: notebooklm ${args.join(' ')}`);
+    execFile('notebooklm', args, { timeout: 150000 }, (err, stdout, stderr) => {
+      if (err) {
+        return reject(new Error(stderr || err.message));
+      }
+      resolve(stdout.trim());
+    });
+  });
+}
+
+async function generateNotebookLMCourseOfAction(taskCode, files, rawBriefText) {
+  const tempDir = path.join(__dirname, 'temp_notebook_uploads');
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
+
+  const uploadedPaths = [];
+  try {
+    // 1. Create a notebook
+    console.log(`[NotebookLM] Creating notebook for task "${taskCode}"...`);
+    const createOut = await runCLISafe(['create', taskCode]);
+    const match = createOut.match(/Created notebook:\s*([a-f0-9\-]+)/i);
+    if (!match) {
+      throw new Error(`Failed to parse notebook ID from: ${createOut}`);
+    }
+    const notebookId = match[1];
+    console.log(`[NotebookLM] Created Notebook ID: ${notebookId}`);
+    
+    // Set active notebook
+    await runCLISafe(['use', notebookId]);
+
+    // 2. Write and upload files to NotebookLM
+    if (rawBriefText && rawBriefText.trim() !== '') {
+      const briefPath = path.join(tempDir, 'brief_specifications.md');
+      fs.writeFileSync(briefPath, rawBriefText);
+      uploadedPaths.push(briefPath);
+      console.log(`[NotebookLM] Uploading guidelines text source...`);
+      await runCLISafe(['source', 'add', briefPath]);
+    }
+
+    // Upload compatible files directly
+    if (files && files.length > 0) {
+      for (const file of files) {
+        const ext = file.originalname.split('.').pop().toLowerCase();
+        if (['pdf', 'docx', 'txt', 'md'].includes(ext)) {
+          const filePath = path.join(tempDir, file.originalname);
+          fs.writeFileSync(filePath, file.buffer);
+          uploadedPaths.push(filePath);
+          console.log(`[NotebookLM] Uploading reference file source: ${file.originalname}...`);
+          try {
+            await runCLISafe(['source', 'add', filePath]);
+          } catch (uploadErr) {
+            console.warn(`[NotebookLM WARNING] Failed to upload reference ${file.originalname}: ${uploadErr.message}`);
+          }
+        }
+      }
+    }
+
+    // 3. Ask NotebookLM for suggested course of action
+    console.log(`[NotebookLM] Requesting editorial course of action...`);
+    const prompt = `You have been provided with a comprehensive set of materials, which may include assignment guidelines, study materials, lecture recordings, handwritten notes, and audio files. You must deeply and aggressively synthesize ALL of this raw data.
+
+Generate a highly specific, professional, and structured "AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION" document. This document acts as the absolute gold-standard rubric for the writer to achieve a High Distinction (90%+ marks).
+
+CRITICAL INSTRUCTION: Do NOT be generic or vague. Be extremely specific. If a specific theory, author, case study, or methodology is mentioned in the notes/audio, mandate its use explicitly. 
+
+Include the following sections:
+1. SUMMARY OF KEY REQUIREMENTS: Provide the exact task description, absolute word count limits, specific spacing/alignment constraints, and deadlines.
+2. WRITING AND SUBMISSION BLUEPRINT: A highly specific step-by-step methodology on how to tackle the paper based on the nuances in the lecture notes and recordings.
+3. EXPLICIT SECTIONS & HEADING CHECKLIST: Outline the EXACT section titles, headers, and subheaders the writer must use. For each section, provide specific, detailed bullet points of what arguments, data, or analyses MUST be included based on the study materials.
+4. CORE THEORIES, FRAMEWORKS, & TERMINOLOGY: Identify the exact names of theories, models, formulas, key concepts, or specific terminology mentioned across all the audio and notes that MUST be applied or referenced. Do not just say "use relevant theories"—name them explicitly.
+5. CITATION & RESOURCE RULES: Detail specific citation formats (APA/Harvard, etc.) and explicitly ban fluff/zombie references.
+6. AUDITING AND RECOMMENDATIONS: Provide structural advice and highlight which AI critic models should be prioritized during the QC phase to enforce these specific rules.
+
+Return your output in clean Markdown formatting. Keep it extremely detailed, authoritative, and highly specific to the provided materials.`;
+
+    const askOut = await runCLISafe(['ask', prompt]);
+    
+    let cleanAnswer = askOut;
+    if (cleanAnswer.includes("Answer:")) {
+      cleanAnswer = cleanAnswer.substring(cleanAnswer.indexOf("Answer:") + 7).trim();
+    }
+    return cleanAnswer;
+  } catch (err) {
+    console.error("[NotebookLM ERROR] Pipeline failed:", err.message);
+    throw err;
+  } finally {
+    // Cleanup temporary files
+    for (const filePath of uploadedPaths) {
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch (cleanupErr) {
+        console.warn(`[NotebookLM] Cleanup failed for ${filePath}:`, cleanupErr.message);
+      }
+    }
+    try {
+      if (fs.existsSync(tempDir)) {
+        fs.rmdirSync(tempDir);
+      }
+    } catch (d) {}
+  }
+}
+
+async function callLLMWithMeta(model, systemPrompt, userPrompt) {
+  // SMART WATERFALL: Try OpenRouter -> Groq -> HuggingFace
+  try {
+    const response = await callOpenRouter(model, systemPrompt, userPrompt);
+    return { text: response.text, modelName: response.modelName };
+  } catch (err) {
+    console.warn(`OpenRouter API failed for ${model}: ${err.message}. Trying Groq fallback...`);
+  }
+
+  const groqKey = process.env.GROQ_API_KEY;
+  if (groqKey) {
+    try {
+      console.log(`[LLM REQUEST] Direct Groq API - model fallback: ${model}`);
+      const response = await callGroq(model, systemPrompt, userPrompt);
+      return { text: response, modelName: `Direct Groq (${model})` };
+    } catch (groqErr) {
+      console.warn(`Direct Groq API failed: ${groqErr.message}. Trying HuggingFace fallback...`);
+    }
+  }
+
+  const hfKey = process.env.HF_TOKEN;
+  if (hfKey) {
+    try {
+      console.log(`[LLM REQUEST] Direct HuggingFace API - model fallback: ${model}`);
+      const response = await callHuggingFace(model, systemPrompt, userPrompt);
+      return { text: response, modelName: `Direct HuggingFace (${model})` };
+    } catch (hfErr) {
+      console.warn(`Direct HuggingFace API failed: ${hfErr.message}. Fallback chain exhausted.`);
+      throw new Error(`All providers failed for model ${model}.`);
+    }
+  }
+  
+  throw new Error(`All providers failed for model ${model} and no further keys available.`);
+}
+
+function runPythonDocxChecker(filePath) {
+  return new Promise((resolve) => {
+    console.log(`[Python Parser] Running docx_checker.py on ${filePath}...`);
+    const pythonPath = process.env.PYTHON_PATH || 'python3';
+    execFile(pythonPath, [path.join(__dirname, 'docx_checker.py'), filePath], { timeout: 30000 }, (err, stdout, stderr) => {
+      if (err) {
+        console.warn(`[Python Parser WARNING] Python checker failed:`, stderr || err.message);
+        return resolve(null);
+      }
+      try {
+        const parsed = JSON.parse(stdout.trim());
+        resolve(parsed);
+      } catch (jsonErr) {
+        console.warn(`[Python Parser WARNING] Failed to parse output:`, stdout, jsonErr.message);
+        resolve(null);
+      }
+    });
+  });
+}
+
+async function callGoogleGemini(systemPrompt, userPrompt) {
+  const apiKey = process.env.GEMINI_API_KEY_2 || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not defined in the environment");
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      "Accept-Encoding": "identity"
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: `${systemPrompt}\n\nUser Request/Input:\n${userPrompt}` }]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.15
+      }
+    }),
+    timeout: 30000
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Google Gemini HTTP ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  if (!data.candidates || data.candidates.length === 0 || !data.candidates[0].content || !data.candidates[0].content.parts || data.candidates[0].content.parts.length === 0) {
+    throw new Error("Google Gemini API returned empty choices");
+  }
+
+  return data.candidates[0].content.parts[0].text;
+}
+
+async function callHuggingFace(model, systemPrompt, userPrompt) {
+  const apiKey = process.env.HF_TOKEN;
+  if (!apiKey) {
+    throw new Error("HF_TOKEN is not defined in the environment");
+  }
+
+  let hfModel = "meta-llama/Llama-3.3-70B-Instruct";
+  if (model && model.toLowerCase().includes("qwen")) {
+    hfModel = "Qwen/Qwen2.5-72B-Instruct";
+  } else if (model && (model.toLowerCase().includes("mistral") || model.toLowerCase().includes("nemo"))) {
+    hfModel = "mistralai/Mistral-Nemo-Instruct-2407";
+  }
+
+  const response = await fetch(`https://api-inference.huggingface.co/models/${hfModel}/v1/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    },
+    body: JSON.stringify({
+      model: hfModel,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      temperature: 0.15,
+      max_tokens: 4000
+    }),
+    timeout: 30000
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`HuggingFace HTTP ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  if (!data.choices || data.choices.length === 0) {
+    throw new Error("HuggingFace API returned empty choices");
+  }
+
+  return data.choices[0].message.content;
+}
+
+async function callGroq(model, systemPrompt, userPrompt) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    throw new Error("GROQ_API_KEY is not defined in the environment");
+  }
+
+  let groqModel = "llama-3.3-70b-versatile";
+  if (model && model.toLowerCase().includes("qwen")) {
+    groqModel = "qwen-2.5-coder-32b";
+  } else if (model && (model.toLowerCase().includes("mistral") || model.toLowerCase().includes("nemo") || model.toLowerCase().includes("nemotron"))) {
+    groqModel = "mixtral-8x7b-32768";
+  } else if (model && model.toLowerCase().includes("3.2-3b")) {
+    groqModel = "llama-3.2-3b-preview";
+  }
+
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      "Accept-Encoding": "identity"
+    },
+    body: JSON.stringify({
+      model: groqModel,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      temperature: 0.15
+    }),
+    timeout: 30000
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Groq HTTP ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  if (!data.choices || data.choices.length === 0) {
+    throw new Error("Groq API returned empty choices");
+  }
+
+  return data.choices[0].message.content;
+}
+
+async function callLLM(model, systemPrompt, userPrompt) {
+  // SMART WATERFALL: Try OpenRouter -> Groq -> HuggingFace
+  try {
+    const response = await callOpenRouter(model, systemPrompt, userPrompt);
+    return response.text;
+  } catch (err) {
+    console.warn(`OpenRouter API failed for ${model}: ${err.message}. Trying Groq fallback...`);
+  }
+
+  const groqKey = process.env.GROQ_API_KEY;
+  if (groqKey) {
+    try {
+      console.log(`[LLM REQUEST] Direct Groq API - model fallback: ${model}`);
+      return await callGroq(model, systemPrompt, userPrompt);
+    } catch (groqErr) {
+      console.warn(`Direct Groq API failed: ${groqErr.message}. Trying HuggingFace fallback...`);
+    }
+  }
+
+  const hfKey = process.env.HF_TOKEN;
+  if (hfKey) {
+    try {
+      console.log(`[LLM REQUEST] Direct HuggingFace API - model fallback: ${model}`);
+      return await callHuggingFace(model, systemPrompt, userPrompt);
+    } catch (hfErr) {
+      console.warn(`Direct HuggingFace API failed: ${hfErr.message}. Fallback chain exhausted.`);
+      throw new Error(`All providers failed for model ${model}.`);
+    }
+  }
+  
+  throw new Error(`All providers failed for model ${model} and no further keys available.`);
+}
+
+async function callOpenRouter(model, systemPrompt, userPrompt) {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENROUTER_API_KEY is not defined in the backend environment");
+  }
+
+  const maxRetries = 3;
+  let attempt = 0;
+  let delay = 1000;
+
+  while (attempt < maxRetries) {
+    try {
+      console.log(`[API REQUEST] Model: ${model} - Attempt ${attempt + 1}/${maxRetries}`);
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://vigilqc.com",
+          "X-Title": "Vigil QC",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Accept-Encoding": "identity"
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt }
+          ],
+          temperature: 0.15
+        }),
+        timeout: 35000 // 35s timeout
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`OpenRouter HTTP ${response.status}: ${errText}`);
+      }
+
+      const data = await response.json();
+      if (!data.choices || data.choices.length === 0) {
+        throw new Error("OpenRouter API returned empty choices");
+      }
+
+      return { text: data.choices[0].message.content, modelName: `OpenRouter (${data.model || model})` };
+    } catch (err) {
+      attempt++;
+      console.warn(`[API WARNING] Attempt ${attempt} failed: ${err.message}`);
+      if (attempt >= maxRetries) {
+        throw err;
+      }
+      await new Promise(resolve => setTimeout(resolve, delay));
+      delay *= 2;
+    }
+  }
+}
+
+async function runConsensusEvaluation(brief, text, isRework, previousReport = '', historicalOverridesText = '') {
+  const modelCritic1 = "meta-llama/llama-3.3-70b-instruct:free";
+  const modelCritic2 = "qwen/qwen-2.5-72b-instruct:free";
+  const modelCritic3 = "mistralai/mistral-nemo:free";
+  const modelMaster = "gemini-2.0-flash"; // Exclusively handled by Google API
+  const fallbackModel = "meta-llama/llama-3.3-70b-instruct:free"; // Triggers waterfall
+
+  // Split guidelines to extract NotebookLM suggested course of action
+  const briefParts = brief.split('\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n');
+  const originalBrief = briefParts[0];
+  const notebookLMSuggestions = briefParts.length > 1 ? briefParts[1] : "None available.";
+
+  // System Prompts for Critics
+  const sys1 = `You are Critic 1: Brief & Rubric Compliance Auditor. 
+Your job is to strictly check if the submitted text satisfies all Brief criteria and specific guidelines. 
+Identify any missing requirements, formatting constraints, or styling violations. 
+Provide a clear bulleted list of issues.`;
+
+  const sys2 = `You are Critic 2: Structure, Flow, & Header Auditor. 
+Your job is to audit document outline structure, readability flow, paragraph sequences, and section header formatting. 
+Identify any disjointed paragraphs, logical flow bugs, or structural issues. 
+Provide a clear bulleted list of issues.`;
+
+  const sys3 = `You are Critic 3: Citations & Reference Forensic Auditor. 
+Your job is to analyze references, quotes, citations, and facts. 
+Check for any fabricated sources, incorrect formats (APA/MLA/etc.), or citation mismatch errors. 
+Provide a clear bulleted list of issues.`;
+
+  // Prompts for Critics
+  let userPrompt = "";
+  if (isRework) {
+    userPrompt = `
+You are evaluating a RESUBMISSION. Your ONLY job is to verify if the writer addressed the issues flagged in the Previous Forensic Audit. Ignore all other external guidelines unless directly required to verify a fix.
+
+=== PREVIOUS FORENSIC AUDIT (RUN 1/2) ===
+${previousReport}
+
+=== REVISED SUBMISSION ===
+${text}
+
+Examine the revised text. Identify explicitly if the previous audit errors were resolved or if violations remain.
+Ensure you verify strict compliance against any high-priority historical override validation rules. Do NOT invent new critiques outside of what was flagged previously.
+`;
+  } else {
+    userPrompt = `
+=== NOTEBOOKLM EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION (REQUIRED REFERENCE) ===
+${notebookLMSuggestions}
+
+${historicalOverridesText}
+
+=== SUBMISSION ===
+${text}
+
+Examine the submitted text. Identify all errors, violations, or issues.
+Ensure you verify strict compliance against any high-priority historical override validation rules and the NotebookLM Suggested Course of Action.
+`;
+  }
+
+  // Fire parallel Critics using a Mix-and-Match approach to prevent rate limit collisions
+  console.log("Triggering 3 Critics in parallel using Mix-and-Match providers...");
+  
+  // Critic 1: Prefers GROQ first
+  const p1 = callGroq(modelCritic1, sys1, userPrompt)
+    .then(text => ({ text, modelName: `Direct Groq (llama-3.3-70b-versatile)` }))
+    .catch(err => {
+      console.warn("Critic 1 Groq failed, trying OpenRouter...", err.message);
+      return callOpenRouter(modelCritic1, sys1, userPrompt);
+    })
+    .catch(() => ({ text: "Critic 1 analysis failed.", modelName: "Failed (No active model)" }));
+
+  // Critic 2: Prefers OPENROUTER first
+  const p2 = callOpenRouter(modelCritic2, sys2, userPrompt)
+    .catch(err => {
+      console.warn("Critic 2 OpenRouter failed, trying Groq...", err.message);
+      return callGroq(modelCritic2, sys2, userPrompt).then(text => ({ text, modelName: `Direct Groq (qwen-2.5-coder-32b)` }));
+    })
+    .catch(() => ({ text: "Critic 2 analysis failed.", modelName: "Failed (No active model)" }));
+
+  // Critic 3: Prefers HUGGINGFACE first
+  const p3 = callHuggingFace(modelCritic3, sys3, userPrompt)
+    .then(text => ({ text, modelName: `Direct HuggingFace (Mistral-Nemo-Instruct)` }))
+    .catch(err => {
+      console.warn("Critic 3 HuggingFace failed, trying OpenRouter...", err.message);
+      return callOpenRouter(modelCritic3, sys3, userPrompt);
+    })
+    .catch(() => ({ text: "Critic 3 analysis failed.", modelName: "Failed (No active model)" }));
+
+  const [resObj1, resObj2, resObj3] = await Promise.all([p1, p2, p3]);
+  const res1 = resObj1.text;
+  const activeModel1 = resObj1.modelName;
+  const res2 = resObj2.text;
+  const activeModel2 = resObj2.modelName;
+  const res3 = resObj3.text;
+  const activeModel3 = resObj3.modelName;
+
+  // Master Supervisor consolidation
+  const sysMaster = `You are the Master Supervisor of the VIGIL Quality Control Council.
+Reconcile the feedback from the three independent Critics (Compliance, Structure, Citations).
+Deduplicate overlapping comments, resolve any conflicting arguments, and compile the final authoritative VIGIL Forensic Report in Markdown format.
+
+Under each assessment section (Brief Compliance, Document Structure, Reference Authenticity), you MUST explicitly state the name of the Critic model that performed the evaluation (e.g., "Evaluation performed by [Model Name]").
+
+Your report MUST calculate a final VIGIL Score out of 100. Be critical and subtract points for all issues.
+If the score is less than 90, you MUST prepend a prominent warning alert block:
+"⚠️ WARNING: VIGIL Quality Score is below the 90% distinction quality threshold. Revision is required before task can pass to Team Lead."
+
+Ensure your markdown layout matches this structure:
+# VIGIL FORENSIC AUDIT REPORT
+## VIGIL Score: [Score]/100
+[Insert Warning Alert Block here if score < 90]
+
+## Brief Compliance Assessment
+*Evaluation performed by Critic 1 (${activeModel1})*
+[Reconciled summary of compliance matching Critic 1]
+
+## Document Structure & Header Audit
+*Evaluation performed by Critic 2 (${activeModel2})*
+[Reconciled structural assessment matching Critic 2]
+
+## Reference Authenticity & Citation Review
+*Evaluation performed by Critic 3 (${activeModel3})*
+[Reconciled citation checks matching Critic 3]
+
+## Detailed Penalty Breakdown
+- -[X] Points: [Deduction reason]
+- -[Y] Points: [Deduction reason]
+
+## Master Recommendations
+[Final guidelines for rework]
+`;
+
+  const userMaster = `
+=== BRIEF ===
+${originalBrief}
+
+=== NOTEBOOKLM SUGGESTIONS ===
+${notebookLMSuggestions}
+
+=== CRITIC 1 (COMPLIANCE AUDIT - Ran on: ${activeModel1}) ===
+${res1}
+
+=== CRITIC 2 (STRUCTURE AUDIT - Ran on: ${activeModel2}) ===
+${res2}
+
+=== CRITIC 3 (CITATION AUDIT - Ran on: ${activeModel3}) ===
+${res3}
+
+=== SUBMITTED TEXT ===
+${text}
+
+Compile the consolidated Master VIGIL Forensic Report based on the guidelines.
+`;
+
+  let masterModelName = "";
+  try {
+    console.log("Sending audits to Master Supervisor (Gemini-locked)...");
+    const masterRes = await callGoogleGemini(sysMaster, userMaster);
+    masterModelName = "Direct Google Gemini (gemini-2.0-flash)";
+    return masterRes + `\n\n---\n\n*Consensus synthesized and judged by VIGIL Master Judge (${masterModelName})*`;
+  } catch (err) {
+    console.warn("Master Supervisor (Gemini) failed. Master role has no failover...", err.message);
+    return `
+# VIGIL FORENSIC AUDIT REPORT (UNIFIED CRITICAL FALLBACK)
+## VIGIL Score: 50/100
+⚠️ FAIL: VIGIL Quality Score is below the 90% distinction quality threshold.
+
+### Critics Consolidated Output
+Due to Master Supervisor API timeout, the raw Critic logs are output below.
+
+#### Critic 1 (Compliance) - Model: ${activeModel1}
+${res1}
+
+#### Critic 2 (Structure) - Model: ${activeModel2}
+${res2}
+
+#### Critic 3 (Citations) - Model: ${activeModel3}
+${res3}
+`;
+  }
+}
+
+// ==========================================
+// 3. ROLE ACCESS & DB VERIFICATION MIDDLEWARE
+// ==========================================
+
+async function verifyUser(req, res, next) {
+  const email = req.headers['x-user-email'] || req.query.email || 'prishapublishingteamlead@gmail.com';
+
+  let system_role = 'Freelancer';
+  if (email.startsWith('tl.') || email === 'prishapublishingteamlead@gmail.com' || email.toLowerCase().includes('teamlead') || email.toLowerCase().includes('manager')) {
+    system_role = 'TL';
+  } else if (email.startsWith('writer.') || email.toLowerCase().includes('writer')) {
+    system_role = 'Writer';
+  }
+
+  req.user = {
+    email: email,
+    system_role: system_role,
+    access_status: 'Allowed',
+    registered_hardware_uuid: null
+  };
+  
+  next();
+}
+
+// ==========================================
+// OMNIROUTE LOCAL OPENAI-COMPATIBLE GATEWAY
+// Endpoint: http://localhost:3000/v1/chat/completions
+// ==========================================
+
+app.get('/v1/models', (req, res) => {
+  res.json({
+    object: "list",
+    data: [
+      { id: "omniroute-auto", object: "model", created: Date.now(), owned_by: "omniroute" },
+      { id: "llama-3.3-70b-versatile", object: "model", created: Date.now(), owned_by: "groq" },
+      { id: "gemini-2.0-flash", object: "model", created: Date.now(), owned_by: "google" },
+      { id: "meta-llama/llama-3.3-70b-instruct:free", object: "model", created: Date.now(), owned_by: "openrouter" }
+    ]
+  });
+});
+
+app.post('/v1/chat/completions', async (req, res) => {
+  try {
+    const { messages, model } = req.body;
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: "Missing or invalid 'messages' array in payload." });
+    }
+
+    let systemPrompt = "You are a helpful AI assistant connected via OmniRoute gateway.";
+    let userPrompt = "";
+
+    messages.forEach(m => {
+      if (m.role === 'system') systemPrompt = m.content;
+      else if (m.role === 'user') userPrompt += (userPrompt ? "\n" : "") + (typeof m.content === 'string' ? m.content : JSON.stringify(m.content));
+    });
+
+    if (!userPrompt && messages.length > 0) {
+      userPrompt = typeof messages[messages.length - 1].content === 'string' ? messages[messages.length - 1].content : JSON.stringify(messages[messages.length - 1].content);
+    }
+
+    console.log(`[OmniRoute Gateway] Incoming OpenAI request for model '${model || 'auto'}'`);
+    const answer = await omniDispatch(systemPrompt, userPrompt, model);
+
+    res.json({
+      id: `chatcmpl-omni-${Date.now()}`,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model: model || "omniroute-auto",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: answer
+          },
+          finish_reason: "stop"
+        }
+      ],
+      usage: {
+        prompt_tokens: 50,
+        completion_tokens: 50,
+        total_tokens: 100
+      }
+    });
+  } catch (err) {
+    console.error("[OmniRoute Gateway Error]:", err.message);
+    res.status(500).json({
+      error: {
+        message: err.message,
+        type: "omniroute_router_error",
+        code: "failover_exhausted"
+      }
+    });
+  }
+});
+
+// ==========================================
+// 4. API ENDPOINTS
+// ==========================================
+
+// Get user profile
+app.get('/api/me', verifyUser, (req, res) => {
+  res.json(req.user);
+});
+
+// Fetch all available tasks (Filtered based on role restrictions)
+app.get('/api/tasks', verifyUser, async (req, res) => {
+  try {
+    let query = supabase.from('qc_tasks').select('*');
+
+    // Freelancer restriction: Can only see their assigned tasks
+    if (req.user.system_role === 'Freelancer') {
+      query = query.eq('assigned_writer_email', req.user.email);
+    }
+
+    const { data: tasks, error } = await query;
+    if (error) throw error;
+
+    // Filter sensitive billing/invoice fields for Writer and Freelancer roles
+    const filteredTasks = tasks.map(task => {
+      const t = { ...task };
+      if (req.user.system_role !== 'TL') {
+        delete t.invoicing_amount;
+      }
+      if (req.user.system_role === 'Writer') {
+        delete t.earnings_amount; // Writers don't have earnings ledger details here
+      }
+      return t;
+    });
+
+    res.json(filteredTasks);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to retrieve tasks list' });
+  }
+});
+
+async function checkSemanticPlagiarism(newText, taskCode) {
+  try {
+    // 1. Fetch raw text of all previously approved tasks (except current one)
+    const { data: approvedTasks, error } = await supabase
+      .from('qc_tasks')
+      .select('task_code, submitted_text')
+      .eq('status', 'Approved')
+      .neq('task_code', taskCode)
+      .neq('submitted_text', '');
+
+    if (error) {
+      console.warn("DB fetch for approved tasks plagiarism scan failed:", error.message);
+      return { plagiarized: false };
+    }
+
+    if (!approvedTasks || approvedTasks.length === 0) {
+      return { plagiarized: false };
+    }
+
+    // Prepare comparison block
+    let comparisonBlock = "";
+    approvedTasks.forEach(at => {
+      comparisonBlock += `=== TASK CODE: ${at.task_code} ===\n${at.submitted_text.substring(0, 4000)}\n\n`;
+    });
+
+    const sysPrompt = `You are the VIGIL Plagiarism and Concept Paraphrase Scanner. 
+Compare the user's draft submission against a database of previously approved documents to detect if the writer has spun, recycled, or heavily paraphrased past concepts, details, or papers.
+Look beyond simple word substitutions. Verify if the core ideas or layout has been spun.
+If you detect high semantic similarity or spun content (concept replication over 30%), flag it as plagiarized.
+You must return your output ONLY as a valid JSON object matching this structure:
+{
+  "plagiarized": true,
+  "confidence_score": 85,
+  "matching_task_code": "TASK-123",
+  "reasoning": "Matching task details explanation"
+}
+If no plagiarism or concept spin is detected, return:
+{
+  "plagiarized": false,
+  "confidence_score": 0,
+  "matching_task_code": "",
+  "reasoning": "Clear"
+}`;
+
+    const userPrompt = `
+=== DATABASE OF PAST APPROVED DOCUMENTS ===
+${comparisonBlock}
+
+=== NEW SUBMISSION TO AUDIT ===
+${newText}
+
+Verify similarity and output the JSON structure.
+`;
+
+    console.log("Calling OpenRouter semantic concept paraphrase checker...");
+    const rawResult = await callLLM("meta-llama/llama-3.3-70b-instruct:free", sysPrompt, userPrompt);
+    
+    // Clean JSON response
+    const cleanedJson = rawResult.replace(/```json/i, '').replace(/```/g, '').trim();
+    const result = JSON.parse(cleanedJson);
+    return result;
+  } catch (err) {
+    console.error("Semantic concept paraphrase scan failed/timed out:", err.message);
+    return { plagiarized: false };
+  }
+}
+
+// Create task (TL Only)
+// Create task (TL Only)
+app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
+  const { task_code, client_id, assigned_writer_email, brief_text, deadline, invoicing_amount, earnings_amount } = req.body;
+  if (!task_code) {
+    return res.status(400).json({ error: 'Missing mandatory field: task_code' });
+  }
+
+  const writerEmail = assigned_writer_email || 'local-writer@vigil.com';
+
+  try {
+    let finalBriefText = brief_text || '';
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        console.log(`Parsing brief attachment: ${file.originalname}...`);
+        const parsedBrief = await parseDocument(file.buffer, file.originalname);
+        finalBriefText = (finalBriefText ? finalBriefText + "\n\n" : "") + 
+                         `=== MULTIMEDIA BRIEF ATTACHMENT (${file.originalname}) ===\n` + 
+                         parsedBrief.text;
+      }
+    }
+
+    if (!finalBriefText) {
+      return res.status(400).json({ error: 'Brief guidelines text or reference files are required.' });
+    }
+
+    const brief_text_hash = crypto.createHash('sha256').update(finalBriefText).digest('hex');
+
+    // Generate AI Summary and suggested course of action
+    let courseOfAction = "";
+    try {
+      console.log("Attempting to generate suggested course of action via Google NotebookLM...");
+      courseOfAction = await generateNotebookLMCourseOfAction(task_code, req.files, finalBriefText);
+    } catch (nbErr) {
+      console.warn("NotebookLM pipeline failed, falling back to direct LLM generator:", nbErr.message);
+      
+      const courseOfActionSystem = `You are the VIGIL Quality Engineer & Editorial Director. 
+Analyze the uploaded assignment guidelines, brief instructions, and study materials.
+Generate a professional, structured "AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION" document that advises the writer on how to achieve a High Distinction (90%+ marks).
+
+Include:
+1. SUMMARY OF KEY REQUIREMENTS (What is the task, word count, specific spacing/alignment constraint mentioned, deadline).
+2. WRITING AND SUBMISSION BLUEPRINT (Step-by-step guidance on how to structure the document).
+3. EXPLICIT SECTIONS & HEADING CHECKLIST (What exact sections, headers, and subheaders they must write, and critical points to address in each).
+4. CITATION & RESOURCE RULES (Are there specific APA/Harvard rules? Address zombie/fluff references).
+5. AUDITING AND RECOMMENDATIONS (Which AI critic models should they prioritize, and structural advice).
+
+Return your output in clean Markdown formatting. Keep it extremely detailed, authoritative, and structured.`;
+
+      try {
+        courseOfAction = await callLLM("meta-llama/llama-3.3-70b-instruct:free", courseOfActionSystem, `Project Guideline Materials:\n${finalBriefText}`);
+      } catch (aiErr) {
+        console.warn("Fallback LLM guidance generation failed:", aiErr.message);
+        courseOfAction = `Failed to generate dynamic guidance: ${aiErr.message}`;
+      }
+    }
+
+    finalBriefText += `\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n${courseOfAction}`;
+
+    const { data, error } = await supabase
+      .from('qc_tasks')
+      .insert([{
+        task_code,
+        client_id: client_id || 'GLOBAL',
+        assigned_writer_email: writerEmail,
+        brief_text: finalBriefText,
+        brief_text_hash,
+        qc_count: 0,
+        qc_log_payload: '',
+        status: 'Pending',
+        words_completed: 0,
+        invoicing_amount: parseFloat(invoicing_amount || 0),
+        earnings_amount: parseFloat(earnings_amount || 0),
+        deadline: deadline || '',
+        manual_notes: '',
+        submitted_text: ''
+      }])
+      .select();
+
+    if (error) throw error;
+    res.status(201).json(data[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: `Failed to create task: ${err.message}` });
+  }
+});
+
+// Delete task (TL Only)
+app.delete('/api/tasks/:code', verifyUser, async (req, res) => {
+  const { code } = req.params;
+  
+  if (req.user.system_role !== 'TL') {
+    return res.status(403).json({ error: 'Permission denied: Only Team Leads can delete projects.' });
+  }
+
+  try {
+    console.log(`Deleting project: ${code}...`);
+
+    // 1. Delete associated chats
+    const { error: chatErr } = await supabase
+      .from('task_chats')
+      .delete()
+      .eq('task_code', code);
+    if (chatErr) throw chatErr;
+
+    // 2. Delete the project details
+    const { error: taskErr } = await supabase
+      .from('qc_tasks')
+      .delete()
+      .eq('task_code', code);
+    if (taskErr) throw taskErr;
+
+    // 3. Delete from NotebookLM (non-blocking)
+    try {
+      console.log(`[NotebookLM] Cleaning up/deleting notebook for task ${code}...`);
+      const listJson = await runCLISafe(['list', '--json']);
+      const parsedList = JSON.parse(listJson);
+      if (parsedList && parsedList.notebooks) {
+        const targets = parsedList.notebooks.filter(nb => nb.title.toLowerCase() === code.toLowerCase());
+        for (const target of targets) {
+          console.log(`[NotebookLM] Found matching Notebook ID ${target.id} for task ${code}. Deleting...`);
+          try {
+            await runCLISafe(['delete', '-n', target.id, '-y']);
+          } catch (delErr) {
+            console.warn(`[NotebookLM WARNING] Failed to delete notebook ${target.id}:`, delErr.message);
+          }
+        }
+      }
+    } catch (nbCleanErr) {
+      console.warn(`[NotebookLM WARNING] Failed to delete notebook from Google Account:`, nbCleanErr.message);
+    }
+
+    res.json({ message: `Project ${code} deleted successfully.` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: `Failed to delete project: ${err.message}` });
+  }
+});
+
+// Run QC Audit (Requires document upload)
+app.post('/api/tasks/:code/audit', verifyUser, upload.any(), async (req, res) => {
+  const { code } = req.params;
+
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ error: 'No files uploaded.' });
+  }
+
+  try {
+    // 1. Fetch current task details
+    const { data: task, error: fetchErr } = await supabase
+      .from('qc_tasks')
+      .select('*')
+      .eq('task_code', code)
+      .single();
+
+    if (fetchErr || !task) {
+      return res.status(404).json({ error: 'Task not found.' });
+    }
+
+    // 2. Parse all uploaded files
+    let combinedText = '';
+    for (const file of req.files) {
+      console.log(`Parsing solution attachment: ${file.originalname}...`);
+      const parsedFile = await parseDocument(file.buffer, file.originalname);
+      combinedText += (combinedText ? "\n\n" : "") + parsedFile.text;
+    }
+
+    const parsed = {
+      text: combinedText,
+      wordCount: countWords(combinedText)
+    };
+    const textHash = crypto.createHash('sha256').update(parsed.text).digest('hex');
+
+    // 5. Internal Plagiarism & Concept Paraphrase Checker
+    console.log(`Auditing submission for semantic plagiarism/concept spin...`);
+    const plagiarismResult = await checkSemanticPlagiarism(parsed.text, code);
+    if (plagiarismResult.plagiarized) {
+      const alertMsg = `🚨 INTERNAL PLAGIARISM FLAG: Concept spin detected matching past approved task [${plagiarismResult.matching_task_code}]. Confidence: ${plagiarismResult.confidence_score}%. Reason: "${plagiarismResult.reasoning}". Submission blocked.`;
+      
+      await supabase.from('task_chats').insert([{
+        task_code: code,
+        sender_email: 'vigil.system@vigil.com',
+        message_text: alertMsg
+      }]);
+
+      return res.status(403).json({
+        error: `Semantic Plagiarism Detected: matches approved task [${plagiarismResult.matching_task_code}]`,
+        plagiarism: true,
+        details: plagiarismResult
+      });
+    }
+
+    // 6. Verify Originality (Submission Match 1 uniqueness check)
+    let isDuplicated = false;
+    if (task.qc_count === 0) {
+      // Check if file content hash matches brief hash or matches any previous logs in DB
+      if (textHash === task.brief_text_hash) {
+        isDuplicated = true;
+      } else {
+        const { data: otherTasks } = await supabase
+          .from('qc_tasks')
+          .select('qc_log_payload')
+          .neq('task_code', code);
+        
+        if (otherTasks) {
+          for (const ot of otherTasks) {
+            if (ot.qc_log_payload && ot.qc_log_payload.includes(textHash)) {
+              isDuplicated = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // 7. Brief Recall Memory Logic: Retrieve historical overrides/complaints
+    let historicalOverridesText = "";
+    try {
+      const { data: historicalTasks } = await supabase
+        .from('qc_tasks')
+        .select('task_code, manual_notes')
+        .eq('brief_text_hash', task.brief_text_hash)
+        .neq('task_code', code);
+
+      if (historicalTasks && historicalTasks.length > 0) {
+        const codes = historicalTasks.map(ht => ht.task_code);
+        const { data: historicalChats } = await supabase
+          .from('task_chats')
+          .select('task_code, sender_email, message_text')
+          .in('task_code', codes);
+
+        let overrides = [];
+        historicalTasks.forEach(ht => {
+          if (ht.manual_notes && ht.manual_notes.trim() !== '') {
+            overrides.push(`- Task ${ht.task_code} Editorial Guideline Override: "${ht.manual_notes}"`);
+          }
+        });
+
+        if (historicalChats) {
+          historicalChats.forEach(hc => {
+            const isTL = hc.sender_email.startsWith('tl.');
+            const msgLower = hc.message_text.toLowerCase();
+            const isOverrideOrComplaint = msgLower.includes('override') || 
+                                          msgLower.includes('complaint') || 
+                                          msgLower.includes('error') || 
+                                          msgLower.includes('violation') ||
+                                          msgLower.includes('reject');
+            if (isTL || isOverrideOrComplaint) {
+              overrides.push(`- Task ${hc.task_code} Log (${hc.sender_email}): "${hc.message_text}"`);
+            }
+          });
+        }
+
+        if (overrides.length > 0) {
+          historicalOverridesText = "\n=== HISTORICAL TEAM LEAD OVERRIDES & PIPELINE COMPLAINTS (HIGH-PRIORITY VALIDATION RULES) ===\n" + overrides.join('\n') + "\n";
+        }
+      }
+    } catch (memErr) {
+      console.warn("Failed to retrieve historical brief recall memory logs:", memErr.message);
+    }
+
+    // 8. Continuous Auto-Learning Rule Engine: Query dynamically learned constraints
+    let learnedRulesText = "";
+    try {
+      const { data: clientRules } = await supabase
+        .from('evolution_rules')
+        .select('rule_variable_string')
+        .eq('client_id', task.client_id || 'GLOBAL');
+
+      if (clientRules && clientRules.length > 0) {
+        learnedRulesText = "\n=== DYNAMIC CONTINUOUSLY LEARNED CLIENT RULES (HIGH-PRIORITY COMPLIANCE) ===\n" + 
+                           clientRules.map(cr => `- ${cr.rule_variable_string}`).join('\n') + "\n";
+      }
+    } catch (ruleErr) {
+      console.warn("Failed to query learned rules from DB:", ruleErr.message);
+    }
+
+    const combinedValidationRules = historicalOverridesText + learnedRulesText;
+    const currentCount = Math.min(2, task.qc_count + 1);
+    const isRework = currentCount === 2 || req.query.rework === 'true';
+
+    // Programmatic Formatting & Layout Spacing Check
+    let formatting = { spacing: "Unknown", alignment: "Unknown", dominantFont: "Unknown", wordCount: 0, citationsCount: 0, referenceEntriesCount: 0 };
+    const docxFile = req.files.find(f => f.originalname.endsWith('.docx'));
+    if (docxFile) {
+      const tempDocxPath = path.join(__dirname, `temp_audit_${Date.now()}.docx`);
+      fs.writeFileSync(tempDocxPath, docxFile.buffer);
+      
+      const pyResult = await runPythonDocxChecker(tempDocxPath);
+      if (pyResult) {
+        formatting = {
+          spacing: pyResult.lineSpacing || "Unknown",
+          alignment: pyResult.dominantAlignment || "Unknown",
+          dominantFont: pyResult.dominantFont || "Unknown",
+          wordCount: pyResult.wordCount || 0,
+          citationsCount: pyResult.citationsCount || 0,
+          referenceEntriesCount: pyResult.referenceEntriesCount || 0
+        };
+        // Override word counts parsed via mammoth with exact word counts from python-docx
+        if (pyResult.wordCount) {
+          parsed.wordCount = pyResult.wordCount;
+        }
+      }
+      try {
+        if (fs.existsSync(tempDocxPath)) fs.unlinkSync(tempDocxPath);
+      } catch (cErr) {}
+    }
+
+    let layoutViolations = [];
+    let layoutDeductions = 0;
+    const briefLower = task.brief_text.toLowerCase();
+
+    // Spacing Check
+    if (briefLower.includes("double spacing") || briefLower.includes("double space")) {
+      if (formatting.spacing !== "Double Spacing" && formatting.spacing !== "Unknown") {
+        layoutViolations.push(`Layout spacing mismatch: Expected Double Spacing, but found ${formatting.spacing}`);
+        layoutDeductions += 10;
+      }
+    } else if (briefLower.includes("single spacing") || briefLower.includes("single space")) {
+      if (formatting.spacing !== "Single Spacing" && formatting.spacing !== "Unknown") {
+        layoutViolations.push(`Layout spacing mismatch: Expected Single Spacing, but found ${formatting.spacing}`);
+        layoutDeductions += 10;
+      }
+    }
+
+    // Text Alignment Check
+    if (briefLower.includes("justified")) {
+      if (formatting.alignment !== "Justified" && formatting.alignment !== "Unknown") {
+        layoutViolations.push(`Text alignment mismatch: Expected Justified, but found ${formatting.alignment}`);
+        layoutDeductions += 10;
+      }
+    }
+
+    // Font Family Check
+    if (briefLower.includes("times new roman")) {
+      if (formatting.dominantFont !== "Times New Roman" && formatting.dominantFont !== "Unknown") {
+        layoutViolations.push(`Font family mismatch: Expected Times New Roman, but found dominant font ${formatting.dominantFont}`);
+        layoutDeductions += 10;
+      }
+    } else if (briefLower.includes("arial")) {
+      if (formatting.dominantFont !== "Arial" && formatting.dominantFont !== "Unknown") {
+        layoutViolations.push(`Font family mismatch: Expected Arial, but found dominant font ${formatting.dominantFont}`);
+        layoutDeductions += 10;
+      }
+    } else if (briefLower.includes("calibri")) {
+      if (formatting.dominantFont !== "Calibri" && formatting.dominantFont !== "Unknown") {
+        layoutViolations.push(`Font family mismatch: Expected Calibri, but found dominant font ${formatting.dominantFont}`);
+        layoutDeductions += 10;
+      }
+    }
+
+    // Reference & Citation Check
+    if (briefLower.includes("references") || briefLower.includes("bibliography") || briefLower.includes("citation")) {
+      if (formatting.citationsCount === 0) {
+        layoutViolations.push(`Reference Citations check failed: No academic citations (parenthetical or bracketed numbers) were found in the text.`);
+        layoutDeductions += 10;
+      }
+      if (formatting.referenceEntriesCount === 0) {
+        layoutViolations.push(`Bibliography check failed: No References or Bibliography list section entries were detected at the end of the document.`);
+        layoutDeductions += 10;
+      }
+      
+      // Post citation count summary to chat
+      await supabase.from('task_chats').insert([{
+        task_code: code,
+        sender_email: 'vigil.system@vigil.com',
+        message_text: `🔍 REFERENCE DIAGNOSTICS: Detected ${formatting.citationsCount} inline citations in text, and ${formatting.referenceEntriesCount} reference entries in bibliography.`
+      }]);
+    }
+
+    // Section Fragmentation & Word Distribution Tracking
+    const sections = fragmentSections(parsed.text);
+    const distributionRules = await extractBriefSectionDistribution(task.brief_text);
+
+    let structuralViolations = [];
+    let structuralDeductions = 0;
+    let sectionAnalytics = [];
+    const totalActualWords = parsed.wordCount;
+
+    for (const secName in distributionRules) {
+      const targetPercent = distributionRules[secName];
+      const targetWords = Math.round(totalActualWords * (targetPercent / 100));
+
+      let actualWords = 0;
+      for (const k in sections) {
+        if (k.toLowerCase() === secName.toLowerCase() || k.toLowerCase().startsWith(secName.toLowerCase())) {
+          actualWords = sections[k].wordCount;
+          break;
+        }
+      }
+
+      const allowedVariance = Math.round(targetWords * 0.20);
+      const minWords = Math.max(0, targetWords - allowedVariance);
+      const maxWords = targetWords + allowedVariance;
+      const isOut = actualWords < minWords || actualWords > maxWords;
+
+      sectionAnalytics.push({
+        section: secName,
+        targetPercent,
+        targetWords,
+        actualWords,
+        minAllowed: minWords,
+        maxAllowed: maxWords,
+        violated: isOut
+      });
+
+      if (isOut) {
+        structuralViolations.push(`Section '${secName}' word count is ${actualWords} (Target: ${targetWords} words, allowed variance: ${minWords}-${maxWords}).`);
+        structuralDeductions += 15;
+      }
+    }
+
+    // Log Programmatic Warnings to Task Chat Logs before AI evaluates
+    for (const lv of layoutViolations) {
+      await supabase.from('task_chats').insert(sanitizeObjectForPostgres([{
+        task_code: code,
+        sender_email: 'vigil.system@vigil.com',
+        message_text: `🚨 LAYOUT WARNING: ${lv}`
+      }]));
+    }
+
+    for (const sv of structuralViolations) {
+      await supabase.from('task_chats').insert(sanitizeObjectForPostgres([{
+        task_code: code,
+        sender_email: 'vigil.system@vigil.com',
+        message_text: `🚨 SECTION WORD COUNT VIOLATION: ${sv}`
+      }]));
+    }
+
+    // Merge structural violations into AI feedback guidelines
+    let programmaticAuditText = "";
+    if (layoutViolations.length > 0 || structuralViolations.length > 0) {
+      programmaticAuditText = "\n=== PROGRAMMATIC STRUCTURE & LAYOUT COMPLIANCE FAILURES (HARD RULE PENALTIES APPLIED) ===\n" +
+                              [...layoutViolations, ...structuralViolations].map(v => `- ${v}`).join('\n') + "\n";
+    }
+
+    const updatedValidationRules = combinedValidationRules + programmaticAuditText;
+
+    // 9. Execute VIGIL Forensic Audit (via OpenRouter consensus)
+    console.log(`Starting VIGIL pass ${currentCount}/2 for task ${code}...`);
+    const auditReport = await runConsensusEvaluation(
+      task.brief_text,
+      parsed.text,
+      isRework,
+      task.qc_log_payload,
+      updatedValidationRules
+    );
+
+    // 10. Update forensic log payload
+    const filenamesList = req.files.map(f => f.originalname).join(', ');
+    let updatedPayload = task.qc_log_payload || '';
+    const divider = `\n\n---\n\n`;
+    const auditStamp = `### [RUN ${currentCount} FORENSIC PASS]
+- **File Name:** ${filenamesList}
+- **Originality Check:** ${isDuplicated ? '⚠️ DUPLICATE SUBMISSION DETECTED' : '✅ UNIQUE SUBMISSION'}
+- **Parsed Word Count:** ${parsed.wordCount} words
+- **File SHA-256 Hash:** ${textHash}
+- **Timestamp:** ${new Date().toISOString()}
+
+${auditReport}`;
+
+    if (updatedPayload) {
+      updatedPayload += divider + auditStamp;
+    } else {
+      updatedPayload = auditStamp;
+    }
+
+    // 11. Parse VIGIL Score from Master Supervisor report
+    const scoreMatch = auditReport.match(/Score:\s*(\d+)\/100/i) || 
+                       auditReport.match(/VIGIL Score:\s*(\d+)/i) || 
+                       auditReport.match(/Score:\s*(\d+)/i);
+    let baseScore = 100;
+    if (scoreMatch) {
+      baseScore = parseInt(scoreMatch[1], 10);
+    }
+
+    // Calculate final penalized score
+    const totalDeduction = layoutDeductions + structuralDeductions;
+    const finalVigilScore = Math.max(0, baseScore - totalDeduction);
+    const satisfiesThreshold = finalVigilScore >= 90;
+
+    // 12. Update DB (and save parsed text inside submitted_text field for future scans)
+    const { error: updateErr } = await supabase
+      .from('qc_tasks')
+      .update(sanitizeObjectForPostgres({
+        qc_count: currentCount,
+        qc_log_payload: updatedPayload,
+        words_completed: parsed.wordCount,
+        submitted_text: parsed.text
+      }))
+      .eq('task_code', code);
+
+    if (updateErr) throw updateErr;
+
+    // 13. Log confirmation message to the chat stream database
+    let chatMsg = `⚙️ SYSTEM: Document(s) "${filenamesList}" submitted for QC Audit. Pass ${currentCount} completed. Words counted: ${parsed.wordCount}. Final VIGIL Score: ${finalVigilScore}/100. `;
+    if (satisfiesThreshold) {
+      chatMsg += `✅ PASS: Distinction quality standard met (90%+). Task is ready for Team Lead sign-off.`;
+    } else {
+      chatMsg += `⚠️ WARNING: VIGIL Quality Score is below the 90% distinction quality threshold. Task requires rework before final sign-off.`;
+    }
+
+    if (totalDeduction > 0) {
+      chatMsg += ` (Includes programmatic layout/structure penalty of -${totalDeduction})`;
+    }
+
+    await supabase.from('task_chats').insert(sanitizeObjectForPostgres([{
+      task_code: code,
+      sender_email: 'vigil.system@vigil.com',
+      message_text: chatMsg
+    }]));
+
+    res.json({
+      success: true,
+      report: auditStamp,
+      wordCount: parsed.wordCount,
+      qc_count: currentCount,
+      isDuplicated,
+      vigilScore: finalVigilScore,
+      satisfiesThreshold,
+      formatting,
+      sectionAnalytics
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: `Audit process failed: ${err.message}` });
+  }
+});
+
+// Chat stream endpoints
+app.get('/api/tasks/:code/chats', verifyUser, async (req, res) => {
+  const { code } = req.params;
+  try {
+    // For freelancers, verify assignment
+    if (req.user.system_role === 'Freelancer') {
+      const { data: task } = await supabase
+        .from('qc_tasks')
+        .select('assigned_writer_email')
+        .eq('task_code', code)
+        .single();
+      
+      if (!task || task.assigned_writer_email !== req.user.email) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
+
+    const { data: chats, error } = await supabase
+      .from('task_chats')
+      .select('*')
+      .eq('task_code', code)
+      .order('timestamp', { ascending: true });
+
+    if (error) throw error;
+    res.json(chats);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load task chats' });
+  }
+});
+
+app.post('/api/tasks/:code/chats', verifyUser, async (req, res) => {
+  const { code } = req.params;
+  const { message_text } = req.body;
+
+  if (!message_text) {
+    return res.status(400).json({ error: 'Message body cannot be empty' });
+  }
+
+  try {
+    // For freelancers, verify assignment
+    if (req.user.system_role === 'Freelancer') {
+      const { data: task } = await supabase
+        .from('qc_tasks')
+        .select('assigned_writer_email')
+        .eq('task_code', code)
+        .single();
+      
+      if (!task || task.assigned_writer_email !== req.user.email) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
+
+    const { data, error } = await supabase
+      .from('task_chats')
+      .insert([{
+        task_code: code,
+        sender_email: req.user.email,
+        message_text
+      }])
+      .select();
+
+    if (error) throw error;
+    res.status(201).json(data[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to post message' });
+  }
+});
+
+// Team Lead Panel: Reset QC count
+app.post('/api/tasks/:code/reset', verifyUser, async (req, res) => {
+  if (req.user.system_role !== 'TL') {
+    return res.status(403).json({ error: 'Forbidden: Only Team Leads can reset task QC counters' });
+  }
+
+  const { code } = req.params;
+  const { manual_notes } = req.body;
+
+  try {
+    const { error } = await supabase
+      .from('qc_tasks')
+      .update({
+        qc_count: 0,
+        manual_notes: manual_notes || ''
+      })
+      .eq('task_code', code);
+
+    if (error) throw error;
+
+    // Log the override action to chat stream
+    await supabase.from('task_chats').insert([{
+      task_code: code,
+      sender_email: 'vigil.system@vigil.com',
+      message_text: `🛡️ OVERRIDE: Team Lead (${req.user.email}) has reset the automated QC checker count to 0. Editorial Notes: "${manual_notes || 'None'}"`
+    }]);
+
+    res.json({ success: true, message: 'QC check count reset successfully.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to reset QC counter' });
+  }
+});
+
+// Team Lead Panel: Approve Task and push to payroll
+app.post('/api/tasks/:code/approve', verifyUser, async (req, res) => {
+  if (req.user.system_role !== 'TL') {
+    return res.status(403).json({ error: 'Forbidden: Only Team Leads can approve tasks' });
+  }
+
+  const { code } = req.params;
+  const { feedback } = req.body;
+
+  try {
+    // 1. Fetch task to get client_id
+    const { data: task, error: fetchErr } = await supabase
+      .from('qc_tasks')
+      .select('*')
+      .eq('task_code', code)
+      .single();
+
+    if (fetchErr || !task) {
+      return res.status(404).json({ error: 'Task not found.' });
+    }
+
+    // 2. Mark task as Approved
+    const { error: approveErr } = await supabase
+      .from('qc_tasks')
+      .update({
+        status: 'Approved'
+      })
+      .eq('task_code', code);
+
+    if (approveErr) throw approveErr;
+
+    // 3. Continuous Auto-Learning Rule Extraction
+    let learnedRule = "";
+    if (feedback && feedback.trim() !== '') {
+      try {
+        console.log(`Extracting operational rules from feedback: "${feedback}"...`);
+        const constraintSystem = "You are the VIGIL Quality Engineer. Read the Team Lead's post-completion feedback or client notes, and extract any recurring operational constraints, style rules, or quality preferences as a single clear, actionable rule (e.g. 'Ensure all chart labels are capitalized' or 'Never use active voice in research logs'). Output ONLY the extracted rule string, keep it concise (under 20 words). Do not add comments or markdown formatting.";
+        const ruleResult = await callLLM("meta-llama/llama-3.3-70b-instruct:free", constraintSystem, `Feedback: "${feedback}"`);
+        
+        learnedRule = ruleResult.trim();
+        
+        // Save in DB
+        const { error: insertRuleErr } = await supabase
+          .from('evolution_rules')
+          .insert([{
+            client_id: task.client_id || 'GLOBAL',
+            rule_variable_string: learnedRule,
+            origin_type: 'TL_Comment'
+          }]);
+          
+        if (insertRuleErr) console.warn("Failed to insert learned rule:", insertRuleErr.message);
+      } catch (ruleErr) {
+        console.warn("Auto-learning rule extraction failed:", ruleErr.message);
+      }
+    }
+
+    // 4. Log approval event to chat stream
+    let chatMsg = `🎉 TASK APPROVED: Team Lead (${req.user.email}) has signed off on the final deliverables. Transaction pushed to payroll.`;
+    if (learnedRule) {
+      chatMsg += ` 🧠 Auto-learned rule for client [${task.client_id}]: "${learnedRule}"`;
+    }
+
+    await supabase.from('task_chats').insert([{
+      task_code: code,
+      sender_email: 'vigil.system@vigil.com',
+      message_text: chatMsg
+    }]);
+
+    res.json({ success: true, message: 'Task approved and locked.', learnedRule });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to approve task' });
+  }
+});
+
+// AI Council Teaching Terminal endpoint
+app.post('/api/tasks/:code/teach', verifyUser, upload.single('audio'), async (req, res) => {
+  if (req.user.system_role !== 'TL') {
+    return res.status(403).json({ error: 'Forbidden: Only Team Leads can train the AI Council' });
+  }
+
+  const { code } = req.params;
+  const { text } = req.body;
+  const file = req.file;
+
+  try {
+    // 1. Fetch task to identify client
+    const { data: task, error: fetchErr } = await supabase
+      .from('qc_tasks')
+      .select('*')
+      .eq('task_code', code)
+      .single();
+
+    if (fetchErr || !task) {
+      return res.status(404).json({ error: 'Task not found.' });
+    }
+
+    // 2. Transcribe audio if present, otherwise read text
+    let directive = "";
+    if (file) {
+      console.log(`Transcribing spoken audio instruction directive: ${file.originalname}...`);
+      const base64 = file.buffer.toString('base64');
+      const mime = file.mimetype || 'audio/wav';
+      directive = await transcribeMultimodalOpenRouter(base64, mime, 'audio');
+    } else if (text) {
+      directive = text;
+    }
+
+    if (!directive || directive.trim() === '') {
+      return res.status(400).json({ error: 'No written directive or audio instruction captured.' });
+    }
+
+    console.log(`Extracting Operational Constraints from directive: "${directive}"`);
+
+    // 3. Extract rule
+    const constraintSystem = "You are the VIGIL Quality Engineer. Read the Team Lead's verbal instruction or written directive, and extract any recurring operational constraints, style rules, or quality preferences as a single clear, actionable rule (e.g. 'Ensure all subheadings are bold' or 'Never use active voice'). Output ONLY the extracted rule string, keep it concise (under 20 words). Do not add comments or markdown formatting.";
+    const ruleResult = await callLLM("meta-llama/llama-3.3-70b-instruct:free", constraintSystem, `Directive: "${directive}"`);
+    const rule = ruleResult.trim();
+
+    // 4. Save in DB
+    const { error: insertRuleErr } = await supabase
+      .from('evolution_rules')
+      .insert([{
+        client_id: task.client_id || 'GLOBAL',
+        rule_variable_string: rule,
+        origin_type: 'TL_Comment'
+      }]);
+
+    if (insertRuleErr) throw insertRuleErr;
+
+    // 5. Append message to chat logs
+    const chatMsg = `🧠 AI COUNCIL RULE LEARNED: Team Lead (${req.user.email}) added operational constraint for client [${task.client_id}]: "${rule}" (Source: "${directive.substring(0, 100)}...")`;
+    await supabase.from('task_chats').insert([{
+      task_code: code,
+      sender_email: 'vigil.system@vigil.com',
+      message_text: chatMsg
+    }]);
+
+    res.json({
+      success: true,
+      rule,
+      transcript: directive
+    });
+  } catch (err) {
+    console.error("Teaching engine failed:", err);
+    res.status(500).json({ error: `Teaching process failed: ${err.message}` });
+  }
+});
+
+// Get User's Earnings Log (Freelancer Ledger View)
+app.get('/api/earnings', verifyUser, async (req, res) => {
+  if (req.user.system_role === 'Writer') {
+    return res.status(403).json({ error: 'Writers do not have access to Freelancer Ledger sheets.' });
+  }
+
+  try {
+    let query = supabase.from('qc_tasks').select('task_code, words_completed, earnings_amount, status');
+    
+    // If freelancer, filter by their email
+    if (req.user.system_role === 'Freelancer') {
+      query = query.eq('assigned_writer_email', req.user.email);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to retrieve earnings ledger' });
+  }
+});
+
+// Start listening
+app.listen(PORT, () => {
+  console.log(`Vigil QC Platform backend listening on http://localhost:${PORT}`);
+});

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VIGIL QC Forensic Portal</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+</head>
+<body class="retro-theme">
+
+  <div class="container">
+    <!-- Header panel -->
+    <header class="panel header-panel">
+      <div class="grid-2">
+        <div>
+          <h1 class="logo-title">VIGIL QC PORTAL // LOCAL WORKSPACE</h1>
+          <span class="system-status">SECURE PORTAL AUTOMATION ACTIVE</span>
+        </div>
+        <div class="text-right" style="align-self: center;">
+          <button id="btn-show-create-project" class="btn btn-massive btn-success">➕ CREATE NEW PROJECT</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Project Selection Row -->
+    <div class="panel selection-panel">
+      <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px 20px;">
+        <div style="display: grid; grid-template-columns: auto 1fr auto; gap: 16px; align-items: center;">
+          <label for="project-search" class="label-heavy">🔍 SEARCH PROJECT:</label>
+          <input type="text" id="project-search" class="input-massive" placeholder="Type project name to search/filter..." style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid var(--color-border); padding: 8px 12px; border-radius: 6px; font-family: inherit;">
+          <button id="btn-refresh" class="btn btn-secondary">🔄 REFRESH LIST</button>
+        </div>
+        <div style="display: grid; grid-template-columns: auto 1fr auto; gap: 16px; align-items: center;">
+          <label for="task-selector" class="label-heavy">SELECT ACTIVE PROJECT:</label>
+          <select id="task-selector" class="select-massive">
+            <option value="">-- NO PROJECT LOADED --</option>
+          </select>
+          <button id="btn-delete-project" class="btn" style="background: var(--color-danger); color: #fff; border: 1px solid var(--color-danger); padding: 10px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; display: none;">❌ DELETE PROJECT</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- CREATE PROJECT FORM (Collapsible Panel, hidden by default) -->
+    <div id="create-project-panel" class="panel hidden">
+      <div class="panel-header">
+        <h3>[ CREATE NEW PROJECT CONTEXT ]</h3>
+      </div>
+      <div class="panel-body">
+        <form id="create-project-form" enctype="multipart/form-data">
+          <div class="form-group">
+            <label for="form-task-code">PROJECT NAME:</label>
+            <input type="text" id="form-task-code" class="input-massive" placeholder="e.g. quantum-cryptography-paper" required>
+          </div>
+          <div class="form-group margin-top-sm">
+            <label for="form-brief-files">UPLOAD REFERENCE FILES / GUIDELINES (Multiple Allowed):</label>
+            <div style="color: #ff4444; font-size: 13px; margin-bottom: 8px; font-weight: bold; background: rgba(255,0,0,0.1); padding: 8px; border-left: 3px solid #ff4444;">
+              ⚠️ IMPORTANT: ONLY upload the assignment brief or core instructions here. Do NOT upload large study materials, textbooks, or datasets. Massive files here will completely overwhelm the Dynamic Guidance engine!
+            </div>
+            <input type="file" id="form-brief-files" class="input-massive" name="brief_files" multiple>
+            <p class="help-text">Attach instruction PDFs, syllabus docx, zip file guides, or lecture audio instructions.</p>
+          </div>
+          <div class="form-group margin-top-sm">
+            <label for="form-brief-text">RAW TEXT INSTRUCTIONS (Optional):</label>
+            <textarea id="form-brief-text" class="input-massive" name="brief_text" rows="5" placeholder="Paste email bodies or extra instructions here..."></textarea>
+          </div>
+          <div class="grid-2 gap-sm margin-top-md">
+            <button type="button" id="btn-cancel-create" class="btn btn-secondary">CANCEL</button>
+            <button type="submit" id="btn-submit-project" class="btn btn-success">SUBMIT PROJECT GUIDELINES</button>
+          </div>
+        </form>
+        <div id="create-task-loading" class="banner hidden margin-top-sm" style="background: var(--color-accent); color: #fff; padding: 12px; border-radius: 6px; text-align: center; font-weight: bold; border-left: 4px solid #fff;">SYSTEM IS ANALYZING PROJECT GUIDELINES. KINDLY WAIT...</div>
+        <div id="create-task-error" class="error-banner hidden margin-top-sm"></div>
+        <div id="create-task-success" class="success-banner hidden margin-top-sm">PROJECT SPAWNED SUCCESSFULLY. SELECT FROM DROPDOWN TO ACCESS.</div>
+      </div>
+    </div>
+
+    <!-- Empty State -->
+    <div id="empty-state" class="panel info-panel text-center">
+      <h2>SELECT A PROJECT TO BEGIN</h2>
+      <p>Choose an existing project from the dropdown above, or click the green button to create a new project with your guideline documents.</p>
+    </div>
+
+    <!-- Active Workspace -->
+    <div id="workspace-container" class="hidden">
+      <div class="grid-2-col">
+        <!-- LEFT PANEL: Solution Submission -->
+        <div class="col">
+          <div class="panel">
+            <div class="panel-header">
+              <h3>[ UPLOAD SOLUTION FOR AUDITING ]</h3>
+            </div>
+            <div class="panel-body">
+              <form id="audit-form" enctype="multipart/form-data">
+                <div class="drag-zone" id="drag-zone">
+                  <p class="drag-zone-title">DRAG AND DROP SOLUTION FILES HERE</p>
+                  <p class="drag-zone-sub">(Accepts .docx papers, code files, zip archives, PDFs, etc.)</p>
+                  <input type="file" id="file-input" class="hidden-input" name="solution_files" multiple required>
+                  <div id="file-selected-name" class="file-name-display text-warning">NO FILE SELECTED</div>
+                </div>
+                <button type="submit" id="btn-execute-audit" class="btn btn-massive btn-primary margin-top-md" style="width: 100%; margin-bottom: 10px;">⚡ RUN AUTOMATED FORENSIC QC</button>
+                <button type="button" id="btn-execute-resubmit" class="btn btn-massive btn-warning hidden" style="width: 100%;">🔄 RESUBMIT FOR RE-EVALUATION (FEEDBACK CHECK ONLY)</button>
+              </form>
+              <div id="audit-loading" class="status-indicator pending text-center margin-top-sm hidden">
+                PROCESSING FILES... RUNNING PARALLEL CONSENSUS CRITICS AND PROGRAMMATIC METADATA CHECKERS...
+              </div>
+            </div>
+          </div>
+
+          <!-- Guideline details summary box -->
+          <div class="panel margin-top-md">
+            <div class="panel-header">
+              <h3>[ PROJECT GUIDELINE SPECIFICATION ]</h3>
+            </div>
+            <div class="panel-body">
+              <div style="font-size: 13px; max-height: 200px; overflow-y: auto; background: #000; color: #39ff14; padding: 12px; font-family: monospace; border: 2px solid var(--color-border);" id="val-brief-text">
+                No guideline details.
+              </div>
+            </div>
+          </div>
+
+          <!-- AI Editorial Guidance & Course of Action panel -->
+          <div class="panel margin-top-md">
+            <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+              <h3>[ AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION (POWERED BY NOTEBOOKLM) ]</h3>
+              <button id="btn-save-guidance" class="btn btn-success btn-sm hidden">💾 SAVE OVERRIDE</button>
+            </div>
+            <div class="panel-body">
+              <textarea id="val-course-of-action" class="input-massive" style="font-size: 13px; height: 350px; background: #0c0f1d; color: #e2e8f0; padding: 12px; border: 2px solid var(--color-border); line-height: 1.6; resize: vertical;" placeholder="Guideline analysis pending... Select a project to view AI recommendations."></textarea>
+              <p class="help-text" style="margin-top: 8px;"><strong>TEAM LEAD OVERRIDE:</strong> You may manually edit the strict rubric above. Make sure it stays in Markdown format. The QC critics will ONLY grade the submission based on the text inside this box.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT PANEL: QC Report View -->
+        <div class="col">
+          <div class="panel">
+            <div class="panel-header">
+              <h3>[ VIGIL FORENSIC QC REPORT ]</h3>
+            </div>
+            <div class="panel-body">
+              <!-- Programmatic Layout & Structural Breakdown Analytics -->
+              <div id="layout-analytics-box" class="margin-top-sm">
+                <label>📐 PROGRAMMATIC COMPLIANCE & SECTION TRACKING:</label>
+                <div class="panel sub-panel" style="padding: 12px; margin-top: 5px;">
+                  <div id="metadata-status-banner" style="padding: 8px; margin-bottom: 10px; border-radius: 4px; font-weight: bold;" class="hidden">
+                    <!-- Metadata status injected here -->
+                  </div>
+                  <div class="grid-2">
+                    <div><strong>LINE SPACING:</strong> <span id="meta-spacing" class="font-bold">---</span></div>
+                    <div><strong>TEXT ALIGNMENT:</strong> <span id="meta-alignment" class="font-bold">---</span></div>
+                    <div style="grid-column: span 2; margin-top: 5px;"><strong>TOTAL WORD COUNT:</strong> <span id="meta-total-words" class="font-bold">---</span> | <strong>VALID WORD COUNT (Excl. Refs/TOC):</strong> <span id="meta-valid-words" class="font-bold">---</span></div>
+                  </div>
+                  <div class="margin-top-sm">
+                    <strong>SECTION WORD COUNT TRACKING:</strong>
+                    <div id="section-analytics-list" class="margin-top-xs" style="font-size: 12px; line-height: 1.6;">
+                      <!-- Rendered dynamically -->
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Main consolidated markdown report -->
+              <div class="report-content-panel margin-top-md" id="report-view-content" style="max-height: 600px; overflow-y: auto;">
+                <p class="text-muted italic">No QC audit ran yet. Upload a solution file on the left and submit to trigger the audit.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Script logic -->
+  <script src="app.js"></script>
+</body>
+</html>
