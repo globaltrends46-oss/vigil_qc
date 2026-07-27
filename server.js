@@ -20,6 +20,9 @@ const AdmZip = require('adm-zip');
 // Load environment variables
 dotenv.config();
 
+const PORT = process.env.PORT || 3000;
+const HOST = "0.0.0.0";
+
 async function callLLM(model, systemPrompt, userPrompt) {
   const omniGatewayUrl = process.env.OMNIROUTE_URL || 'http://localhost:20128/v1/chat/completions';
   try {
@@ -1990,6 +1993,6 @@ app.get('/api/earnings', verifyUser, async (req, res) => {
 });
 
 // Start listening
-app.listen(PORT, () => {
-  console.log(`Vigil QC Platform backend listening on http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Vigil QC Platform backend listening on http://${HOST}:${PORT}`);
 });
