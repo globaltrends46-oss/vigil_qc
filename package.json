@@ -2,7 +2,7 @@
   "name": "vigil-qc-platform",
   "version": "1.0.0",
   "description": "Vigil QC Forensic Audit & Compliance Platform",
-  "main": "main.js",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "electron": "electron .",
