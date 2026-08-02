@@ -22,6 +22,8 @@ try { pdfParse = require('pdf-parse'); } catch (e) { console.warn('[VIGIL] Optio
 let AdmZip = null;
 try { AdmZip = require('adm-zip'); } catch (e) { console.warn('[VIGIL] Optional adm-zip import skipped:', e.message); }
 
+const { analyzeBriefWithAnythingLLM } = require('./lib/anythingLLMEngine');
+
 // Load environment variables
 dotenv.config();
 
@@ -1237,33 +1239,14 @@ app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
 
     const brief_text_hash = crypto.createHash('sha256').update(finalBriefText).digest('hex');
 
-    // Generate AI Summary and suggested course of action
+    // Generate AI Summary and suggested course of action via Embedded AnythingLLM Engine
     let courseOfAction = "";
     try {
-      console.log("Attempting to generate suggested course of action via Google NotebookLM...");
-      courseOfAction = await generateNotebookLMCourseOfAction(task_code, req.files, finalBriefText);
-    } catch (nbErr) {
-      console.warn("NotebookLM pipeline failed, falling back to direct LLM generator:", nbErr.message);
-      
-      const courseOfActionSystem = `You are the VIGIL Quality Engineer & Editorial Director. 
-Analyze the uploaded assignment guidelines, brief instructions, and study materials.
-Generate a professional, structured "AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION" document that advises the writer on how to achieve a High Distinction (90%+ marks).
-
-Include:
-1. SUMMARY OF KEY REQUIREMENTS (What is the task, word count, specific spacing/alignment constraint mentioned, deadline).
-2. WRITING AND SUBMISSION BLUEPRINT (Step-by-step guidance on how to structure the document).
-3. EXPLICIT SECTIONS & HEADING CHECKLIST (What exact sections, headers, and subheaders they must write, and critical points to address in each).
-4. CITATION & RESOURCE RULES (Are there specific APA/Harvard rules? Address zombie/fluff references).
-5. AUDITING AND RECOMMENDATIONS (Which AI critic models should they prioritize, and structural advice).
-
-Return your output in clean Markdown formatting. Keep it extremely detailed, authoritative, and structured.`;
-
-      try {
-        courseOfAction = await callLLM("meta-llama/llama-3.3-70b-instruct:free", courseOfActionSystem, `Project Guideline Materials:\n${finalBriefText}`);
-      } catch (aiErr) {
-        console.warn("Fallback LLM guidance generation failed:", aiErr.message);
-        courseOfAction = `Failed to generate dynamic guidance: ${aiErr.message}`;
-      }
+      console.log("Analyzing project guidelines via Embedded AnythingLLM Engine...");
+      courseOfAction = await analyzeBriefWithAnythingLLM(finalBriefText);
+    } catch (llmErr) {
+      console.warn("AnythingLLM engine failed, using direct summary fallback:", llmErr.message);
+      courseOfAction = `Guideline Summary:\n${finalBriefText.substring(0, 1000)}`;
     }
 
     finalBriefText += `\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n${courseOfAction}`;
