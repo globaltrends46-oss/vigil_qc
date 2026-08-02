@@ -29,16 +29,19 @@ const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0";
 
 async function callLLM(model, systemPrompt, userPrompt) {
-  const omniGatewayUrl = process.env.OMNIROUTE_URL || 'http://localhost:20128/v1/chat/completions';
+  const omniGatewayUrl = process.env.OMNIROUTE_URL || 'https://gateway.gtrendsnow.com/v1/chat/completions';
+  const apiKey = process.env.OMNIROUTE_API_KEY || 'sk-omniroute-vigil-qc-production';
+
   try {
     const response = await fetch(omniGatewayUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.GROQ_API_KEY || 'sk-omniroute-key'}`
+        "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: model || "omniroute-auto",
+        model: model || "auto/best-fast",
+        stream: false,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt }
@@ -47,13 +50,23 @@ async function callLLM(model, systemPrompt, userPrompt) {
     });
 
     if (response.ok) {
-      const data = await response.json();
-      if (data.choices && data.choices[0] && data.choices[0].message) {
-        return data.choices[0].message.content;
+      const rawText = await response.text();
+      let cleanText = rawText.trim();
+      if (cleanText.startsWith('data: ')) {
+        cleanText = cleanText.replace(/^data:\s*/, '').trim();
+      }
+      try {
+        const data = JSON.parse(cleanText);
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+          return data.choices[0].message.content;
+        }
+      } catch (jsonErr) {
+        console.warn(`[OmniRoute Response JSON parse fallback]: ${jsonErr.message}`);
+        return cleanText;
       }
     }
   } catch (err) {
-    console.warn(`[OmniRoute Gateway] Router at http://localhost:20128 unavailable: ${err.message}`);
+    console.warn(`[OmniRoute Gateway] Call to ${omniGatewayUrl} failed: ${err.message}`);
   }
 
   return await callLLMWithMeta(model, systemPrompt, userPrompt);
