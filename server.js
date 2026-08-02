@@ -414,6 +414,43 @@ function extractPptxText(buffer) {
   return textParts.join('\n\n');
 }
 
+function extractXlsxText(buffer) {
+  let textParts = [];
+  try {
+    const zip = new AdmZip(buffer);
+    const entries = zip.getEntries();
+    let sharedStrings = [];
+    const sharedEntry = zip.getEntry('xl/sharedStrings.xml');
+    if (sharedEntry) {
+      const xml = sharedEntry.getData().toString('utf8');
+      const matches = xml.match(/<t[^>]*>(.*?)<\/t>/gi);
+      if (matches) {
+        sharedStrings = matches.map(m => m.replace(/<\/?[^>]+(>|$)/g, '').trim());
+      }
+    }
+
+    const sheetEntries = entries.filter(e => e.entryName.match(/xl\/worksheets\/sheet\d+\.xml$/i));
+    sheetEntries.forEach((entry, idx) => {
+      const xml = entry.getData().toString('utf8');
+      const cellMatches = xml.match(/<v[^>]*>(.*?)<\/v>/gi);
+      if (cellMatches && cellMatches.length > 0) {
+        const cellValues = cellMatches.map(m => {
+          const val = m.replace(/<\/?[^>]+(>|$)/g, '').trim();
+          const num = parseInt(val, 10);
+          return !isNaN(num) && sharedStrings[num] !== undefined ? sharedStrings[num] : val;
+        }).filter(Boolean);
+
+        if (cellValues.length > 0) {
+          textParts.push(`--- EXCEL SHEET ${idx + 1} SHEET DATA ---\n` + cellValues.join(', '));
+        }
+      }
+    });
+  } catch (err) {
+    console.warn('[XLSX Parser Warning] Failed to parse xlsx XML:', err.message);
+  }
+  return textParts.join('\n\n');
+}
+
 async function parseDocument(fileBuffer, fileName) {
   const ext = fileName.split('.').pop().toLowerCase();
   let text = '';
@@ -425,6 +462,8 @@ async function parseDocument(fileBuffer, fileName) {
       text = result.value || '';
     } else if ((ext === 'pptx' || ext === 'ppt') && AdmZip) {
       text = extractPptxText(fileBuffer);
+    } else if ((ext === 'xlsx' || ext === 'xls' || ext === 'csv') && AdmZip) {
+      text = extractXlsxText(fileBuffer) || fileBuffer.toString('utf8');
     } else if (ext === 'pdf' && pdfParse) {
       const result = await pdfParse(fileBuffer);
       text = result.text || '';
@@ -442,6 +481,7 @@ async function parseDocument(fileBuffer, fileName) {
       console.log(`Transcribing audio lecture via OmniRoute: ${fileName}...`);
       text = await transcribeMultimodalOpenRouter(base64, mime, 'audio');
     } else {
+      // Code files (.py, .js, .ts, .csv, .html, .css, .json, .sql, .sh) and plain text
       text = fileBuffer.toString('utf8');
     }
   } catch (parseErr) {
