@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "build": "echo 'no build required'",
     "electron": "electron .",
     "dev": "node server.js"
   },

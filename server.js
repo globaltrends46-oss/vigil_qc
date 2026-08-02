@@ -10,6 +10,7 @@ if (!global.WebSocket) {
 
 const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
+const fetch = globalThis.fetch || require('node-fetch');
 const path = require('path');
 const fs = require('fs');
 let mammoth = null;
