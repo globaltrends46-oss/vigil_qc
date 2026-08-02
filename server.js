@@ -34,9 +34,13 @@ async function callLLM(model, systemPrompt, userPrompt) {
   const omniGatewayUrl = process.env.OMNIROUTE_URL || 'https://gateway.gtrendsnow.com/v1/chat/completions';
   const apiKey = process.env.OMNIROUTE_API_KEY || 'sk-omniroute-vigil-qc-production';
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
   try {
     const response = await fetch(omniGatewayUrl, {
       method: "POST",
+      signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`
@@ -50,6 +54,8 @@ async function callLLM(model, systemPrompt, userPrompt) {
         ]
       })
     });
+
+    clearTimeout(timeoutId);
 
     if (response.ok) {
       const rawText = await response.text();
@@ -838,10 +844,14 @@ async function callOpenRouter(model, systemPrompt, userPrompt) {
   let delay = 1000;
 
   while (attempt < maxRetries) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     try {
       console.log(`[API REQUEST] Model: ${model || 'auto/best-fast'} via OmniRoute - Attempt ${attempt + 1}/${maxRetries}`);
       const response = await fetch(omniGatewayUrl, {
         method: "POST",
+        signal: controller.signal,
         headers: {
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
@@ -858,6 +868,8 @@ async function callOpenRouter(model, systemPrompt, userPrompt) {
           temperature: 0.15
         })
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errText = await response.text();
