@@ -108,10 +108,14 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB file limit
 });
 
-// Initialize Supabase Client
+// Initialize Supabase Client with node-fetch polyfill
 const supabaseUrl = process.env.SUPABASE_URL || "https://wlqyxcqofnsyqvkhuhgy.supabase.co";
 const supabaseKey = process.env.SUPABASE_KEY || "sb_publishable_dRQBQWsumkt-UYF5W0Er-w_A7oeQ7qn";
-const supabase = createClient(supabaseUrl, supabaseKey);
+const nodeFetch = require('node-fetch');
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: { persistSession: false },
+  global: { fetch: nodeFetch }
+});
 
 // Inject NotebookLM Cookie
 if (process.env.NOTEBOOKLM_COOKIE) {
