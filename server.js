@@ -76,12 +76,8 @@ const upload = multer({
 });
 
 // Initialize Supabase Client
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
-if (!supabaseUrl || !supabaseKey) {
-  console.error("CRITICAL: SUPABASE_URL or SUPABASE_KEY missing in .env config");
-  process.exit(1);
-}
+const supabaseUrl = process.env.SUPABASE_URL || "https://wlqyxcqofnsyqvkhuhgy.supabase.co";
+const supabaseKey = process.env.SUPABASE_KEY || "sb_publishable_dRQBQWsumkt-UYF5W0Er-w_A7oeQ7qn";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Inject NotebookLM Cookie
@@ -1990,6 +1986,11 @@ app.get('/api/earnings', verifyUser, async (req, res) => {
     console.error(err);
     res.status(500).json({ error: 'Failed to retrieve earnings ledger' });
   }
+});
+
+// Catch-all route to serve public/index.html for single-page app navigation
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // Start listening
