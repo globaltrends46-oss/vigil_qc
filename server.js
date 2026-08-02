@@ -278,12 +278,10 @@ async function extractZipWords(buffer) {
 }
 
 async function transcribeMultimodalOpenRouter(base64Data, mimeType, dataType) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY is not defined in the backend environment");
-  }
+  const omniGatewayUrl = process.env.OMNIROUTE_URL || 'https://gateway.gtrendsnow.com/v1/chat/completions';
+  const apiKey = process.env.OMNIROUTE_API_KEY || process.env.OPENROUTER_API_KEY || 'sk-omniroute-vigil-qc-production';
 
-  const model = "openrouter/free";
+  const model = "auto/best-fast";
   let content = [];
   
   if (dataType === 'image') {
@@ -316,15 +314,14 @@ async function transcribeMultimodalOpenRouter(base64Data, mimeType, dataType) {
 
   while (attempt < maxRetries) {
     try {
-      console.log(`[API REQUEST] Multimodal Transcribe - Attempt ${attempt + 1}/${maxRetries}`);
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      console.log(`[API REQUEST] Multimodal Transcribe via OmniRoute - Attempt ${attempt + 1}/${maxRetries}`);
+      const response = await fetch(omniGatewayUrl, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": "https://vigilqc.com",
-          "X-Title": "Vigil QC",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+          "HTTP-Referer": "https://vigil.gtrendsnow.com",
+          "X-Title": "Vigil QC"
         },
         body: JSON.stringify({
           model: model,
@@ -332,8 +329,7 @@ async function transcribeMultimodalOpenRouter(base64Data, mimeType, dataType) {
             { role: "user", content: content }
           ],
           temperature: 0.1
-        }),
-        timeout: 60000 // 60s timeout for media transcribing
+        })
       });
 
       if (!response.ok) {
