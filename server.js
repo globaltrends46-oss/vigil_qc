@@ -386,6 +386,34 @@ function sanitizeObjectForPostgres(obj) {
   return obj;
 }
 
+function extractPptxText(buffer) {
+  let textParts = [];
+  try {
+    const zip = new AdmZip(buffer);
+    const entries = zip.getEntries();
+    const slideEntries = entries.filter(e => e.entryName.match(/ppt\/slides\/slide\d+\.xml$/i));
+    slideEntries.sort((a, b) => {
+      const numA = parseInt((a.entryName.match(/\d+/) || [0])[0], 10);
+      const numB = parseInt((b.entryName.match(/\d+/) || [0])[0], 10);
+      return numA - numB;
+    });
+
+    slideEntries.forEach((entry, idx) => {
+      const xml = entry.getData().toString('utf8');
+      const matches = xml.match(/<a:t[^>]*>(.*?)<\/a:t>/gi);
+      if (matches && matches.length > 0) {
+        const slideText = matches.map(m => m.replace(/<\/?[^>]+(>|$)/g, '').trim()).filter(Boolean).join(' ');
+        if (slideText) {
+          textParts.push(`--- SLIDE ${idx + 1} ---\n${slideText}`);
+        }
+      }
+    });
+  } catch (err) {
+    console.warn('[PPTX Parser Warning] Failed to parse pptx XML:', err.message);
+  }
+  return textParts.join('\n\n');
+}
+
 async function parseDocument(fileBuffer, fileName) {
   const ext = fileName.split('.').pop().toLowerCase();
   let text = '';
@@ -395,10 +423,12 @@ async function parseDocument(fileBuffer, fileName) {
     if (ext === 'docx' && mammoth) {
       const result = await mammoth.extractRawText({ buffer: fileBuffer });
       text = result.value || '';
+    } else if ((ext === 'pptx' || ext === 'ppt') && AdmZip) {
+      text = extractPptxText(fileBuffer);
     } else if (ext === 'pdf' && pdfParse) {
       const result = await pdfParse(fileBuffer);
       text = result.text || '';
-    } else if (ext === 'zip' || ext === 'epub') {
+    } else if ((ext === 'zip' || ext === 'epub') && AdmZip) {
       const zipResult = await extractZipWords(fileBuffer);
       text = zipResult.textContent || '';
     } else if (ext === 'png' || ext === 'jpg' || ext === 'jpeg') {
