@@ -269,9 +269,11 @@ createProjectForm.addEventListener('submit', async (e) => {
       initialFormData.append('brief_text', briefText);
     }
 
-    const initialFiles = files.slice(0, 2);
-    for (const file of initialFiles) {
-      initialFormData.append('brief_files', file);
+    // 1. Create project task with lightweight text guidelines (0 files in initial payload for 0.1s response)
+    const initialFormData = new FormData();
+    initialFormData.append('task_code', taskCode);
+    if (briefText) {
+      initialFormData.append('brief_text', briefText);
     }
 
     const res = await fetch(`${API_BASE}/api/tasks`, {
@@ -289,20 +291,19 @@ createProjectForm.addEventListener('submit', async (e) => {
           errMsg = errData.error || errMsg;
         } else {
           const text = await res.text();
-          if (text.includes('413')) errMsg = "Uploaded brief files exceed size limit. Upload core assignment guidelines PDF/DOCX directly.";
-          else if (text.includes('504') || text.includes('503') || text.includes('Timeout')) errMsg = "Processing timeout on cloud server. Upload core assignment brief PDF/DOCX directly.";
+          if (text.includes('413')) errMsg = "Brief text exceeds server limit. Please upload files directly.";
+          else if (text.includes('504') || text.includes('503') || text.includes('Timeout')) errMsg = "Server timeout. Upload core assignment brief PDF/DOCX directly.";
           else errMsg = `Server Error (HTTP ${res.status})`;
         }
       } catch (e) {}
       throw new Error(errMsg);
     }
 
-    // 2. Upload remaining files sequentially (small individual 1MB requests)
-    const remainingFiles = files.slice(2);
-    for (let i = 0; i < remainingFiles.length; i++) {
-      btnSubmitProject.textContent = `UPLOADING FILE ${i + 3}/${files.length}... KINDLY WAIT`;
+    // 2. Upload ALL attached brief files sequentially 1-by-1 (tiny 1MB individual requests)
+    for (let i = 0; i < files.length; i++) {
+      btnSubmitProject.textContent = `ANALYZING FILE ${i + 1}/${files.length}... KINDLY WAIT`;
       const fileFormData = new FormData();
-      fileFormData.append('brief_file', remainingFiles[i]);
+      fileFormData.append('brief_file', files[i]);
 
       try {
         await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(taskCode)}/upload`, {
@@ -311,7 +312,7 @@ createProjectForm.addEventListener('submit', async (e) => {
           body: fileFormData
         });
       } catch (uploadErr) {
-        console.warn(`Sequential file upload warning for ${remainingFiles[i].name}:`, uploadErr.message);
+        console.warn(`Sequential file upload warning for ${files[i].name}:`, uploadErr.message);
       }
     }
 
