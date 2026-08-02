@@ -12,10 +12,14 @@ const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
-const fetch = require('node-fetch');
-const mammoth = require('mammoth');
-const pdfParse = require('pdf-parse');
-const AdmZip = require('adm-zip');
+let mammoth = null;
+try { mammoth = require('mammoth'); } catch (e) { console.warn('[VIGIL] Optional mammoth import skipped:', e.message); }
+
+let pdfParse = null;
+try { pdfParse = require('pdf-parse'); } catch (e) { console.warn('[VIGIL] Optional pdf-parse import skipped:', e.message); }
+
+let AdmZip = null;
+try { AdmZip = require('adm-zip'); } catch (e) { console.warn('[VIGIL] Optional adm-zip import skipped:', e.message); }
 
 // Load environment variables
 dotenv.config();
