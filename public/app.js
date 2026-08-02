@@ -258,24 +258,26 @@ createProjectForm.addEventListener('submit', async (e) => {
   const taskCode = formTaskCode.value.trim();
   if (!taskCode) return;
 
-  const formData = new FormData();
-  formData.append('task_code', taskCode);
-
   const briefText = document.getElementById('form-brief-text').value.trim();
-  if (briefText) {
-    formData.append('brief_text', briefText);
-  }
-
-  const files = formBriefFiles.files;
-  for (let i = 0; i < files.length; i++) {
-    formData.append('brief_files', files[i]);
-  }
+  const files = Array.from(formBriefFiles.files || []);
 
   try {
+    // 1. Create project task with primary text guidelines (up to 2 files attached in initial payload)
+    const initialFormData = new FormData();
+    initialFormData.append('task_code', taskCode);
+    if (briefText) {
+      initialFormData.append('brief_text', briefText);
+    }
+
+    const initialFiles = files.slice(0, 2);
+    for (const file of initialFiles) {
+      initialFormData.append('brief_files', file);
+    }
+
     const res = await fetch(`${API_BASE}/api/tasks`, {
       method: 'POST',
       headers: { 'X-User-Email': currentUserEmail },
-      body: formData
+      body: initialFormData
     });
 
     if (!res.ok) {
@@ -287,7 +289,7 @@ createProjectForm.addEventListener('submit', async (e) => {
           errMsg = errData.error || errMsg;
         } else {
           const text = await res.text();
-          if (text.includes('413')) errMsg = "Uploaded brief files exceed total size limit. Upload core assignment guidelines PDF/DOCX directly.";
+          if (text.includes('413')) errMsg = "Uploaded brief files exceed size limit. Upload core assignment guidelines PDF/DOCX directly.";
           else if (text.includes('504') || text.includes('503') || text.includes('Timeout')) errMsg = "Processing timeout on cloud server. Upload core assignment brief PDF/DOCX directly.";
           else errMsg = `Server Error (HTTP ${res.status})`;
         }
@@ -295,9 +297,25 @@ createProjectForm.addEventListener('submit', async (e) => {
       throw new Error(errMsg);
     }
 
+    // 2. Upload remaining files sequentially (small individual 1MB requests)
+    const remainingFiles = files.slice(2);
+    for (let i = 0; i < remainingFiles.length; i++) {
+      btnSubmitProject.textContent = `UPLOADING FILE ${i + 3}/${files.length}... KINDLY WAIT`;
+      const fileFormData = new FormData();
+      fileFormData.append('brief_file', remainingFiles[i]);
+
+      try {
+        await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(taskCode)}/upload`, {
+          method: 'POST',
+          headers: { 'X-User-Email': currentUserEmail },
+          body: fileFormData
+        });
+      } catch (uploadErr) {
+        console.warn(`Sequential file upload warning for ${remainingFiles[i].name}:`, uploadErr.message);
+      }
+    }
+
     createTaskSuccess.classList.remove('hidden');
-    
-    // Reload task list and select the new task
     await loadTasksList(taskCode);
 
     setTimeout(() => {

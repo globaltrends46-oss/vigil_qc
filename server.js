@@ -1267,6 +1267,54 @@ app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
   }
 });
 
+// Upload supplementary brief file to existing project task
+app.post('/api/tasks/:code/upload', verifyUser, upload.single('brief_file'), async (req, res) => {
+  const { code } = req.params;
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
+  try {
+    const { data: task, error: fetchErr } = await supabase
+      .from('qc_tasks')
+      .select('brief_text')
+      .eq('task_code', code)
+      .single();
+
+    if (fetchErr || !task) {
+      return res.status(404).json({ error: 'Project task not found' });
+    }
+
+    console.log(`[File Upload] Processing brief attachment for ${code}: ${req.file.originalname}...`);
+    const parsed = await parseDocument(req.file.buffer, req.file.originalname);
+    
+    let updatedBrief = task.brief_text || '';
+    updatedBrief += `\n\n=== MULTIMEDIA BRIEF ATTACHMENT (${req.file.originalname}) ===\n` + parsed.text;
+
+    // Re-run AnythingLLM brief analysis with new file content
+    const courseOfAction = await analyzeBriefWithAnythingLLM(updatedBrief);
+    const briefParts = updatedBrief.split('\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n');
+    const cleanBriefText = briefParts[0] + `\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n${courseOfAction}`;
+
+    const brief_text_hash = crypto.createHash('sha256').update(cleanBriefText).digest('hex');
+
+    const { data: updatedTask, error: updateErr } = await supabase
+      .from('qc_tasks')
+      .update({
+        brief_text: cleanBriefText,
+        brief_text_hash
+      })
+      .eq('task_code', code)
+      .select();
+
+    if (updateErr) throw updateErr;
+    res.json(updatedTask[0]);
+  } catch (err) {
+    console.error(`[File Upload Error] ${err.message}`);
+    res.status(500).json({ error: `Failed to upload brief file: ${err.message}` });
+  }
+});
+
 // Delete task (TL Only)
 app.delete('/api/tasks/:code', verifyUser, async (req, res) => {
   const { code } = req.params;
