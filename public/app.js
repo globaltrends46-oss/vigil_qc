@@ -279,8 +279,20 @@ createProjectForm.addEventListener('submit', async (e) => {
     });
 
     if (!res.ok) {
-      const errData = await res.json();
-      throw new Error(errData.error || "Failed to create project");
+      let errMsg = `Server returned HTTP ${res.status}`;
+      try {
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const errData = await res.json();
+          errMsg = errData.error || errMsg;
+        } else {
+          const text = await res.text();
+          if (text.includes('413')) errMsg = "Uploaded brief files exceed total size limit. Upload core assignment guidelines PDF/DOCX directly.";
+          else if (text.includes('504') || text.includes('503') || text.includes('Timeout')) errMsg = "Processing timeout on cloud server. Upload core assignment brief PDF/DOCX directly.";
+          else errMsg = `Server Error (HTTP ${res.status})`;
+        }
+      } catch (e) {}
+      throw new Error(errMsg);
     }
 
     createTaskSuccess.classList.remove('hidden');
