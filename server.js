@@ -766,10 +766,8 @@ async function callLLM(model, systemPrompt, userPrompt) {
 }
 
 async function callOpenRouter(model, systemPrompt, userPrompt) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY is not defined in the backend environment");
-  }
+  const omniGatewayUrl = process.env.OMNIROUTE_URL || 'https://gateway.gtrendsnow.com/v1/chat/completions';
+  const apiKey = process.env.OMNIROUTE_API_KEY || process.env.OPENROUTER_API_KEY || 'sk-omniroute-vigil-qc-production';
 
   const maxRetries = 3;
   let attempt = 0;
@@ -777,39 +775,43 @@ async function callOpenRouter(model, systemPrompt, userPrompt) {
 
   while (attempt < maxRetries) {
     try {
-      console.log(`[API REQUEST] Model: ${model} - Attempt ${attempt + 1}/${maxRetries}`);
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      console.log(`[API REQUEST] Model: ${model || 'auto/best-fast'} via OmniRoute - Attempt ${attempt + 1}/${maxRetries}`);
+      const response = await fetch(omniGatewayUrl, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": "https://vigilqc.com",
-          "X-Title": "Vigil QC",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-          "Accept-Encoding": "identity"
+          "HTTP-Referer": "https://vigil.gtrendsnow.com",
+          "X-Title": "Vigil QC"
         },
         body: JSON.stringify({
-          model: model,
+          model: model || "auto/best-fast",
+          stream: false,
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt }
           ],
           temperature: 0.15
-        }),
-        timeout: 35000 // 35s timeout
+        })
       });
 
       if (!response.ok) {
         const errText = await response.text();
-        throw new Error(`OpenRouter HTTP ${response.status}: ${errText}`);
+        throw new Error(`OmniRoute HTTP ${response.status}: ${errText}`);
       }
 
-      const data = await response.json();
+      const rawText = await response.text();
+      let cleanText = rawText.trim();
+      if (cleanText.startsWith('data: ')) {
+        cleanText = cleanText.replace(/^data:\s*/, '').trim();
+      }
+
+      const data = JSON.parse(cleanText);
       if (!data.choices || data.choices.length === 0) {
-        throw new Error("OpenRouter API returned empty choices");
+        throw new Error("OmniRoute API returned empty choices");
       }
 
-      return { text: data.choices[0].message.content, modelName: `OpenRouter (${data.model || model})` };
+      return { text: data.choices[0].message.content, modelName: `OmniRoute (${model || 'auto'})` };
     } catch (err) {
       attempt++;
       console.warn(`[API WARNING] Attempt ${attempt} failed: ${err.message}`);
