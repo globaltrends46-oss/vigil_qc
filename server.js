@@ -63,12 +63,7 @@ async function callLLM(model, systemPrompt, userPrompt) {
 process.on('uncaughtException', (err) => {
   console.error('[VIGIL UNCAUGHT EXCEPTION]', err?.stack || err);
 });
-process.on('unhandledRejection', (reason) => {
-  console.error('[VIGIL UNHANDLED REJECTION]', reason);
-});
-
 const app = express();
-const PORT = process.env.PORT || 3000;
 
 // Health check endpoints for Hostinger edge router
 app.get('/health', (req, res) => {
