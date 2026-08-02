@@ -4,8 +4,8 @@ const multer = require('multer');
 const dotenv = require('dotenv');
 
 // Polyfill WebSocket for Supabase on older Node environments
-if (!global.WebSocket) {
-  global.WebSocket = require('ws');
+if (!globalThis.WebSocket) {
+  try { globalThis.WebSocket = require('ws'); } catch (e) {}
 }
 
 const { createClient } = require('@supabase/supabase-js');
@@ -2016,6 +2016,6 @@ app.get('*', (req, res) => {
 
 // Start listening
 const serverPort = process.env.PORT || 3000;
-app.listen(serverPort, () => {
-  console.log(`Vigil QC Platform backend listening on port ${serverPort}`);
+app.listen(serverPort, "0.0.0.0", () => {
+  console.log(`Vigil QC Platform backend listening on 0.0.0.0:${serverPort}`);
 });
