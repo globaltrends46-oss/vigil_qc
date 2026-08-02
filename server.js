@@ -22,7 +22,7 @@ try { pdfParse = require('pdf-parse'); } catch (e) { console.warn('[VIGIL] Optio
 let AdmZip = null;
 try { AdmZip = require('adm-zip'); } catch (e) { console.warn('[VIGIL] Optional adm-zip import skipped:', e.message); }
 
-const { analyzeBriefWithAnythingLLM } = require('./lib/anythingLLMEngine');
+const { analyzeBriefWithAnythingLLM, extractContentFromSSEResponse } = require('./lib/anythingLLMEngine');
 
 // Load environment variables
 dotenv.config();
@@ -53,18 +53,9 @@ async function callLLM(model, systemPrompt, userPrompt) {
 
     if (response.ok) {
       const rawText = await response.text();
-      let cleanText = rawText.trim();
-      if (cleanText.startsWith('data: ')) {
-        cleanText = cleanText.replace(/^data:\s*/, '').trim();
-      }
-      try {
-        const data = JSON.parse(cleanText);
-        if (data.choices && data.choices[0] && data.choices[0].message) {
-          return data.choices[0].message.content;
-        }
-      } catch (jsonErr) {
-        console.warn(`[OmniRoute Response JSON parse fallback]: ${jsonErr.message}`);
-        return cleanText;
+      const cleanContent = extractContentFromSSEResponse(rawText);
+      if (cleanContent) {
+        return cleanContent;
       }
     }
   } catch (err) {
@@ -803,17 +794,13 @@ async function callOpenRouter(model, systemPrompt, userPrompt) {
       }
 
       const rawText = await response.text();
-      let cleanText = rawText.trim();
-      if (cleanText.startsWith('data: ')) {
-        cleanText = cleanText.replace(/^data:\s*/, '').trim();
-      }
+      const cleanContent = extractContentFromSSEResponse(rawText);
 
-      const data = JSON.parse(cleanText);
-      if (!data.choices || data.choices.length === 0) {
+      if (!cleanContent) {
         throw new Error("OmniRoute API returned empty choices");
       }
 
-      return { text: data.choices[0].message.content, modelName: `OmniRoute (${model || 'auto'})` };
+      return { text: cleanContent, modelName: `OmniRoute (${model || 'auto'})` };
     } catch (err) {
       attempt++;
       console.warn(`[API WARNING] Attempt ${attempt} failed: ${err.message}`);
