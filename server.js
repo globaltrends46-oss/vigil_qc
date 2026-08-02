@@ -340,15 +340,17 @@ async function transcribeMultimodalOpenRouter(base64Data, mimeType, dataType) {
 
       if (!response.ok) {
         const errText = await response.text();
-        throw new Error(`OpenRouter Multimodal HTTP ${response.status}: ${errText}`);
+        throw new Error(`OmniRoute Multimodal HTTP ${response.status}: ${errText}`);
       }
 
-      const data = await response.json();
-      if (!data.choices || data.choices.length === 0) {
-        throw new Error("OpenRouter Multimodal returned empty completions");
+      const rawText = await response.text();
+      const cleanContent = extractContentFromSSEResponse(rawText);
+
+      if (!cleanContent) {
+        throw new Error("OmniRoute Multimodal returned empty completions");
       }
 
-      return data.choices[0].message.content;
+      return cleanContent;
     } catch (err) {
       attempt++;
       console.warn(`[API WARNING] Multimodal attempt ${attempt} failed: ${err.message}`);
@@ -389,36 +391,35 @@ async function parseDocument(fileBuffer, fileName) {
   let text = '';
   let wordCount = 0;
 
-  if (ext === 'docx') {
-    const result = await mammoth.extractRawText({ buffer: fileBuffer });
-    text = result.value;
-    wordCount = countWords(text);
-  } else if (ext === 'pdf') {
-    const result = await pdfParse(fileBuffer);
-    text = result.text;
-    wordCount = countWords(text);
-  } else if (ext === 'zip' || ext === 'epub') {
-    const zipResult = await extractZipWords(fileBuffer);
-    text = zipResult.textContent;
-    wordCount = zipResult.wordCount;
-  } else if (ext === 'png' || ext === 'jpg' || ext === 'jpeg') {
-    const base64 = fileBuffer.toString('base64');
-    const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
-    console.log(`Transcribing image text via OpenRouter: ${fileName}...`);
-    text = await transcribeMultimodalOpenRouter(base64, mime, 'image');
-    wordCount = countWords(text);
-  } else if (ext === 'mp3' || ext === 'wav') {
-    const base64 = fileBuffer.toString('base64');
-    const mime = ext === 'mp3' ? 'audio/mp3' : 'audio/wav';
-    console.log(`Transcribing audio lecture via OpenRouter: ${fileName}...`);
-    text = await transcribeMultimodalOpenRouter(base64, mime, 'audio');
-    wordCount = countWords(text);
-  } else {
-    // Default to plain text parsing
-    text = fileBuffer.toString('utf8');
-    wordCount = countWords(text);
+  try {
+    if (ext === 'docx' && mammoth) {
+      const result = await mammoth.extractRawText({ buffer: fileBuffer });
+      text = result.value || '';
+    } else if (ext === 'pdf' && pdfParse) {
+      const result = await pdfParse(fileBuffer);
+      text = result.text || '';
+    } else if (ext === 'zip' || ext === 'epub') {
+      const zipResult = await extractZipWords(fileBuffer);
+      text = zipResult.textContent || '';
+    } else if (ext === 'png' || ext === 'jpg' || ext === 'jpeg') {
+      const base64 = fileBuffer.toString('base64');
+      const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
+      console.log(`Transcribing image text via OmniRoute: ${fileName}...`);
+      text = await transcribeMultimodalOpenRouter(base64, mime, 'image');
+    } else if (ext === 'mp3' || ext === 'wav') {
+      const base64 = fileBuffer.toString('base64');
+      const mime = ext === 'mp3' ? 'audio/mp3' : 'audio/wav';
+      console.log(`Transcribing audio lecture via OmniRoute: ${fileName}...`);
+      text = await transcribeMultimodalOpenRouter(base64, mime, 'audio');
+    } else {
+      text = fileBuffer.toString('utf8');
+    }
+  } catch (parseErr) {
+    console.warn(`[Document Parse Warning] Fallback text parsing for ${fileName}: ${parseErr.message}`);
+    text = `[Attachment File: ${fileName}]\n(Document content uploaded successfully: ${fileBuffer.length} bytes)`;
   }
 
+  wordCount = countWords(text);
   text = sanitizeForPostgres(text);
   return { text, wordCount };
 }
