@@ -65,6 +65,10 @@ body.retro-theme {
   align-items: center;
 }
 
+.hidden {
+  display: none !important;
+}
+
 @media (max-width: 1000px) {
   .grid-2-col, .grid-2, .grid-master-selector {
     grid-template-columns: 1fr;

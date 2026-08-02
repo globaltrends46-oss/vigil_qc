@@ -236,16 +236,28 @@ function selectProject(code) {
 
 // ==================== CREATE NEW PROJECT ====================
 
-btnShowCreateProject.addEventListener('click', () => {
-  createProjectPanel.classList.remove('hidden');
-  createTaskError.classList.add('hidden');
-  createTaskSuccess.classList.add('hidden');
-  createProjectForm.reset();
-});
+if (btnShowCreateProject) {
+  btnShowCreateProject.addEventListener('click', () => {
+    console.log('[UI] Opening Create Project panel...');
+    if (createProjectPanel) {
+      createProjectPanel.classList.remove('hidden');
+      createProjectPanel.style.display = 'block';
+    }
+    if (createTaskError) createTaskError.classList.add('hidden');
+    if (createTaskSuccess) createTaskSuccess.classList.add('hidden');
+    if (createProjectForm) createProjectForm.reset();
+  });
+}
 
-btnCancelCreate.addEventListener('click', () => {
-  createProjectPanel.classList.add('hidden');
-});
+if (btnCancelCreate) {
+  btnCancelCreate.addEventListener('click', () => {
+    console.log('[UI] Closing Create Project panel...');
+    if (createProjectPanel) {
+      createProjectPanel.classList.add('hidden');
+      createProjectPanel.style.display = 'none';
+    }
+  });
+}
 
 createProjectForm.addEventListener('submit', async (e) => {
   e.preventDefault();
