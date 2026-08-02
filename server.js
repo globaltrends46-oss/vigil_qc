@@ -54,8 +54,24 @@ async function callLLM(model, systemPrompt, userPrompt) {
   return await callLLMWithMeta(model, systemPrompt, userPrompt);
 }
 
+// Global exception safety guards to prevent container exit
+process.on('uncaughtException', (err) => {
+  console.error('[VIGIL UNCAUGHT EXCEPTION]', err?.stack || err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[VIGIL UNHANDLED REJECTION]', reason);
+});
+
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Health check endpoints for Hostinger edge router
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', service: 'vigil-qc', timestamp: new Date().toISOString() });
+});
+app.get('/ping', (req, res) => {
+  res.status(200).send('pong');
+});
 
 app.use(cors());
 app.use(express.json());
@@ -1994,6 +2010,7 @@ app.get('*', (req, res) => {
 });
 
 // Start listening
-app.listen(PORT, HOST, () => {
-  console.log(`Vigil QC Platform backend listening on http://${HOST}:${PORT}`);
+const serverPort = process.env.PORT || 3000;
+app.listen(serverPort, () => {
+  console.log(`Vigil QC Platform backend listening on port ${serverPort}`);
 });
