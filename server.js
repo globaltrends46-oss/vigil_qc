@@ -1293,7 +1293,7 @@ Verify similarity and output the JSON structure.
 // Create task (TL Only)
 // Create task (TL Only)
 app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
-  const { task_code, client_id, assigned_writer_email, brief_text, deadline, invoicing_amount, earnings_amount } = req.body;
+  const { task_code, client_id, assigned_writer_email, brief_text, deadline, invoicing_amount, earnings_amount, omniroute_api_key } = req.body;
   if (!task_code) {
     return res.status(400).json({ error: 'Missing mandatory field: task_code' });
   }
@@ -1322,7 +1322,7 @@ app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
     let courseOfAction = "";
     try {
       console.log("Analyzing project guidelines via Embedded AnythingLLM Engine...");
-      courseOfAction = await analyzeBriefWithAnythingLLM(finalBriefText);
+      courseOfAction = await analyzeBriefWithAnythingLLM(finalBriefText, [], omniroute_api_key);
     } catch (llmErr) {
       console.warn("AnythingLLM engine failed, using direct summary fallback:", llmErr.message);
       courseOfAction = `Guideline Summary:\n${finalBriefText.substring(0, 1000)}`;
@@ -1338,6 +1338,7 @@ app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
         assigned_writer_email: writerEmail,
         brief_text: finalBriefText,
         brief_text_hash,
+        omniroute_api_key: omniroute_api_key || '',
         qc_count: 0,
         qc_log_payload: '',
         status: 'Pending',

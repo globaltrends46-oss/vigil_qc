@@ -271,21 +271,19 @@ createProjectForm.addEventListener('submit', async (e) => {
   if (!taskCode) return;
 
   const briefText = document.getElementById('form-brief-text').value.trim();
+  const omniKeyInput = document.getElementById('form-omniroute-key');
+  const omniKey = omniKeyInput ? omniKeyInput.value.trim() : '';
   const files = Array.from(formBriefFiles.files || []);
 
   try {
-    // 1. Create project task with primary text guidelines (up to 2 files attached in initial payload)
-    const initialFormData = new FormData();
-    initialFormData.append('task_code', taskCode);
-    if (briefText) {
-      initialFormData.append('brief_text', briefText);
-    }
-
     // 1. Create project task with lightweight text guidelines (0 files in initial payload for 0.1s response)
     const initialFormData = new FormData();
     initialFormData.append('task_code', taskCode);
     if (briefText) {
       initialFormData.append('brief_text', briefText);
+    }
+    if (omniKey) {
+      initialFormData.append('omniroute_api_key', omniKey);
     }
 
     const res = await fetch(`${API_BASE}/api/tasks`, {
