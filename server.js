@@ -300,7 +300,7 @@ async function extractZipWords(buffer) {
 
 async function transcribeMultimodalOpenRouter(base64Data, mimeType, dataType) {
   const omniGatewayUrl = process.env.OMNIROUTE_URL || 'https://gateway.gtrendsnow.com/v1/chat/completions';
-  const apiKey = process.env.OMNIROUTE_API_KEY || process.env.OPENROUTER_API_KEY || 'sk-omniroute-vigil-qc-production';
+  const apiKey = process.env.OMNIROUTE_API_KEY || process.env.OPENROUTER_API_KEY || 'sk-114afa90af2eef95-9170ad-c27ac173';
 
   const model = "auto/best-fast";
   let content = [];
@@ -1383,8 +1383,8 @@ app.post('/api/tasks/:code/upload', verifyUser, upload.single('brief_file'), asy
     let updatedBrief = task.brief_text || '';
     updatedBrief += `\n\n=== MULTIMEDIA BRIEF ATTACHMENT (${req.file.originalname}) ===\n` + parsed.text;
 
-    // Re-run AnythingLLM brief analysis with new file content
-    const courseOfAction = await analyzeBriefWithAnythingLLM(updatedBrief);
+    // Re-run AnythingLLM brief analysis with new file content via OmniRoute Key
+    const courseOfAction = await analyzeBriefWithAnythingLLM(updatedBrief, [], task.omniroute_api_key);
     const briefParts = updatedBrief.split('\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n');
     const cleanBriefText = briefParts[0] + `\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n${courseOfAction}`;
 
