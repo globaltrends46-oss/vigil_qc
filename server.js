@@ -1347,7 +1347,7 @@ Verify similarity and output the JSON structure.
 }
 
 // Create task (TL Only) — accepts JSON with base64-encoded files
-app.post('/api/tasks', verifyUser, express.json({ limit: '50mb' }), async (req, res) => {
+app.post('/api/tasks', verifyUser, async (req, res) => {
   const { task_code, client_id, assigned_writer_email, brief_text, deadline, invoicing_amount, earnings_amount, files: base64Files } = req.body;
   if (!task_code) {
     return res.status(400).json({ error: 'Missing mandatory field: task_code' });
