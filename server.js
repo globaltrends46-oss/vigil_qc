@@ -33,51 +33,31 @@ const HOST = "0.0.0.0";
 async function callLLM(model, systemPrompt, userPrompt) {
   const omniGatewayUrl = process.env.OMNIROUTE_URL || 'https://gateway.gtrendsnow.com/v1/chat/completions';
   const apiKey = process.env.OMNIROUTE_API_KEY || 'sk-114afa90af2eef95-9170ad-c27ac173';
-  const targetModel = model || 'gemini/gemini-2.5-flash';
+  
+  // High-reliability waterfall models
+  const candidates = [
+    model,
+    'hf/Qwen/Qwen2.5-7B-Instruct',
+    'gemini/gemini-2.5-flash',
+    'gemini/gemini-2.0-flash',
+    'auto/best-fast'
+  ].filter(Boolean);
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
-
-  try {
-    const response = await fetch(omniGatewayUrl, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: targetModel,
-        stream: false,
-        max_tokens: 1500,
-        temperature: 0.15,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ]
-      })
-    });
-
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const rawText = await response.text();
-      const cleanContent = extractContentFromSSEResponse(rawText);
-      if (cleanContent && cleanContent.trim()) {
-        return cleanContent;
-      }
-    } else {
-      console.warn(`[OmniRoute] Model ${targetModel} returned HTTP ${response.status}. Retrying with auto/best-fast...`);
-      const retryRes = await fetch(omniGatewayUrl, {
+  for (const targetModel of candidates) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s per candidate
+    try {
+      const response = await fetch(omniGatewayUrl, {
         method: "POST",
+        signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: 'auto/best-fast',
+          model: targetModel,
           stream: false,
-          max_tokens: 1500,
+          max_tokens: 1200,
           temperature: 0.15,
           messages: [
             { role: "system", content: systemPrompt },
@@ -85,24 +65,27 @@ async function callLLM(model, systemPrompt, userPrompt) {
           ]
         })
       });
-      if (retryRes.ok) {
-        const retryText = await retryRes.text();
-        const clean = extractContentFromSSEResponse(retryText);
-        if (clean && clean.trim()) return clean;
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const rawText = await response.text();
+        const cleanContent = extractContentFromSSEResponse(rawText);
+        if (cleanContent && cleanContent.trim()) {
+          return cleanContent;
+        }
       }
-    }
-  } catch (err) {
-    clearTimeout(timeoutId);
-    console.warn(`[OmniRoute Gateway] Call failed: ${err.message}. Trying direct Google Gemini...`);
-    try {
-      return await callGoogleGemini(systemPrompt, userPrompt);
-    } catch (gErr) {
-      console.error(`[LLM Error] Direct Gemini also failed: ${gErr.message}`);
-      throw err;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      console.warn(`[OmniRoute] Candidate model ${targetModel} attempt failed: ${err.message}. Trying next candidate...`);
     }
   }
 
-  throw new Error(`Failed to generate LLM response from OmniRoute (${targetModel})`);
+  // Fallback to direct Gemini if available
+  try {
+    return await callGoogleGemini(systemPrompt, userPrompt);
+  } catch (gErr) {
+    throw new Error(`All candidate models in OmniRoute waterfall failed`);
+  }
 }
 
 // Global exception safety guards to prevent container exit
