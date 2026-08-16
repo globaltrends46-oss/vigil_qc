@@ -1383,7 +1383,6 @@ app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
         assigned_writer_email: writerEmail,
         brief_text: finalBriefText + '\n\n---\n\n# AI EDITORIAL GUIDANCE\n\n⏳ VIGIL-B Analysis is running in background... Refresh this project in 60 seconds to see the full blueprint.',
         brief_text_hash,
-        omniroute_api_key: '',
         qc_count: 0,
         qc_log_payload: '',
         status: 'Pending',
@@ -1450,7 +1449,7 @@ app.post('/api/tasks/:code/upload', verifyUser, upload.single('brief_file'), asy
     updatedBrief += `\n\n=== MULTIMEDIA BRIEF ATTACHMENT (${req.file.originalname}) ===\n` + parsed.text;
 
     // Re-run AnythingLLM brief analysis with new file content via OmniRoute Key
-    const courseOfAction = await analyzeBriefWithAnythingLLM(updatedBrief, [], task.omniroute_api_key);
+    const courseOfAction = await analyzeBriefWithAnythingLLM(updatedBrief, [], process.env.OMNIROUTE_API_KEY || '');
     const briefParts = updatedBrief.split('\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n');
     const cleanBriefText = briefParts[0] + `\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n${courseOfAction}`;
 
