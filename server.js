@@ -1319,9 +1319,8 @@ Verify similarity and output the JSON structure.
 }
 
 // Create task (TL Only)
-// Create task (TL Only)
 app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
-  const { task_code, client_id, assigned_writer_email, brief_text, deadline, invoicing_amount, earnings_amount, omniroute_api_key } = req.body;
+  const { task_code, client_id, assigned_writer_email, brief_text, deadline, invoicing_amount, earnings_amount } = req.body;
   if (!task_code) {
     return res.status(400).json({ error: 'Missing mandatory field: task_code' });
   }
@@ -1329,14 +1328,21 @@ app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
   const writerEmail = assigned_writer_email || 'local-writer@vigil.com';
 
   try {
+    // STEP 1: Parse uploaded files (fast — no AI)
     let finalBriefText = brief_text || '';
     if (req.files && req.files.length > 0) {
       for (const file of req.files) {
         console.log(`Parsing brief attachment: ${file.originalname}...`);
-        const parsedBrief = await parseDocument(file.buffer, file.originalname);
-        finalBriefText = (finalBriefText ? finalBriefText + "\n\n" : "") + 
-                         `=== MULTIMEDIA BRIEF ATTACHMENT (${file.originalname}) ===\n` + 
-                         parsedBrief.text;
+        try {
+          const parsedBrief = await parseDocument(file.buffer, file.originalname);
+          finalBriefText = (finalBriefText ? finalBriefText + "\n\n" : "") +
+                           `=== MULTIMEDIA BRIEF ATTACHMENT (${file.originalname}) ===\n` +
+                           (parsedBrief.text || `[File: ${file.originalname} — ${file.buffer.length} bytes]`);
+        } catch (fileErr) {
+          console.warn(`[Parse Warning] ${file.originalname}: ${fileErr.message}`);
+          finalBriefText = (finalBriefText ? finalBriefText + "\n\n" : "") +
+                           `=== MULTIMEDIA BRIEF ATTACHMENT (${file.originalname}) ===\n[File uploaded: ${file.buffer.length} bytes]`;
+        }
       }
     }
 
@@ -1346,27 +1352,16 @@ app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
 
     const brief_text_hash = crypto.createHash('sha256').update(finalBriefText).digest('hex');
 
-    // Generate AI Summary and suggested course of action via Embedded AnythingLLM Engine
-    let courseOfAction = "";
-    try {
-      console.log("Analyzing project guidelines via Embedded AnythingLLM Engine...");
-      courseOfAction = await analyzeBriefWithAnythingLLM(finalBriefText, [], omniroute_api_key);
-    } catch (llmErr) {
-      console.warn("AnythingLLM engine failed, using direct summary fallback:", llmErr.message);
-      courseOfAction = `Guideline Summary:\n${finalBriefText.substring(0, 1000)}`;
-    }
-
-    finalBriefText += `\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n${courseOfAction}`;
-
+    // STEP 2: Save task immediately with raw brief text (no AI wait = no timeout)
     const { data, error } = await supabase
       .from('qc_tasks')
       .insert([{
         task_code,
         client_id: client_id || 'GLOBAL',
         assigned_writer_email: writerEmail,
-        brief_text: finalBriefText,
+        brief_text: finalBriefText + '\n\n---\n\n# AI EDITORIAL GUIDANCE\n\n⏳ VIGIL-B Analysis is running in background... Refresh this project in 60 seconds to see the full blueprint.',
         brief_text_hash,
-        omniroute_api_key: omniroute_api_key || '',
+        omniroute_api_key: '',
         qc_count: 0,
         qc_log_payload: '',
         status: 'Pending',
@@ -1380,12 +1375,33 @@ app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
       .select();
 
     if (error) throw error;
+
+    // STEP 3: Respond immediately — task is created!
     res.status(201).json(data[0]);
+
+    // STEP 4: Run AnythingLLM VIGIL-B analysis async in background (after response sent)
+    setImmediate(async () => {
+      try {
+        console.log(`[VIGIL-B Background] Starting async brief analysis for ${task_code}...`);
+        const courseOfAction = await analyzeBriefWithAnythingLLM(finalBriefText, []);
+        const updatedBriefText = finalBriefText + `\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n${courseOfAction}`;
+        const updatedHash = crypto.createHash('sha256').update(updatedBriefText).digest('hex');
+        await supabase
+          .from('qc_tasks')
+          .update({ brief_text: updatedBriefText, brief_text_hash: updatedHash })
+          .eq('task_code', task_code);
+        console.log(`[VIGIL-B Background] Analysis complete and saved for ${task_code}`);
+      } catch (bgErr) {
+        console.warn(`[VIGIL-B Background] Analysis failed for ${task_code}: ${bgErr.message}`);
+      }
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: `Failed to create task: ${err.message}` });
   }
 });
+
 
 // Upload supplementary brief file to existing project task
 app.post('/api/tasks/:code/upload', verifyUser, upload.single('brief_file'), async (req, res) => {
