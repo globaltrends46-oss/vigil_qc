@@ -284,21 +284,33 @@ createProjectForm.addEventListener('submit', async (e) => {
   }
 
   try {
-    // 1. Create project task - send text + ALL files together in one request
-    const initialFormData = new FormData();
-    initialFormData.append('task_code', taskCode);
-    if (briefText) {
-      initialFormData.append('brief_text', briefText);
-    }
-    // Append each file with the field name 'brief_file' (matches server upload.any())
-    files.forEach((f) => {
-      initialFormData.append('brief_file', f);
-    });
+    // Read all files as base64 to send as JSON (bypasses proxy multipart restrictions)
+    const filePayloads = await Promise.all(files.map(f => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({
+        name: f.name,
+        type: f.type || 'application/octet-stream',
+        size: f.size,
+        data: reader.result.split(',')[1] // base64 only (strip data:...;base64, prefix)
+      });
+      reader.onerror = reject;
+      reader.readAsDataURL(f);
+    })));
+
+    // 1. Create project task — send as JSON with base64 files
+    const payload = {
+      task_code: taskCode,
+      brief_text: briefText || '',
+      files: filePayloads
+    };
 
     const res = await fetch(`${API_BASE}/api/tasks`, {
       method: 'POST',
-      headers: { 'X-User-Email': currentUserEmail },
-      body: initialFormData
+      headers: {
+        'X-User-Email': currentUserEmail,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
     });
 
     if (!res.ok) {
@@ -318,7 +330,8 @@ createProjectForm.addEventListener('submit', async (e) => {
       throw new Error(errMsg);
     }
 
-    // 2. No secondary upload needed - all files already sent in step 1
+    // 2. Done — all files sent in step 1 as JSON
+
 
     createTaskSuccess.classList.remove('hidden');
     await loadTasksList(taskCode);

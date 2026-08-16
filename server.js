@@ -1346,9 +1346,9 @@ Verify similarity and output the JSON structure.
   }
 }
 
-// Create task (TL Only)
-app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
-  const { task_code, client_id, assigned_writer_email, brief_text, deadline, invoicing_amount, earnings_amount } = req.body;
+// Create task (TL Only) — accepts JSON with base64-encoded files
+app.post('/api/tasks', verifyUser, express.json({ limit: '50mb' }), async (req, res) => {
+  const { task_code, client_id, assigned_writer_email, brief_text, deadline, invoicing_amount, earnings_amount, files: base64Files } = req.body;
   if (!task_code) {
     return res.status(400).json({ error: 'Missing mandatory field: task_code' });
   }
@@ -1356,25 +1356,26 @@ app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
   const writerEmail = assigned_writer_email || 'local-writer@vigil.com';
 
   try {
-    // STEP 1: Parse uploaded files (fast — no AI)
+    // STEP 1: Decode base64 files and parse text content
     let finalBriefText = brief_text || '';
-    if (req.files && req.files.length > 0) {
-      for (const file of req.files) {
-        console.log(`Parsing brief attachment: ${file.originalname}...`);
+    if (base64Files && Array.isArray(base64Files) && base64Files.length > 0) {
+      for (const fileObj of base64Files) {
+        console.log(`Parsing brief attachment: ${fileObj.name}...`);
         try {
-          const parsedBrief = await parseDocument(file.buffer, file.originalname);
+          const fileBuffer = Buffer.from(fileObj.data, 'base64');
+          const parsedBrief = await parseDocument(fileBuffer, fileObj.name);
           finalBriefText = (finalBriefText ? finalBriefText + "\n\n" : "") +
-                           `=== MULTIMEDIA BRIEF ATTACHMENT (${file.originalname}) ===\n` +
-                           (parsedBrief.text || `[File: ${file.originalname} — ${file.buffer.length} bytes]`);
+                           `=== MULTIMEDIA BRIEF ATTACHMENT (${fileObj.name}) ===\n` +
+                           (parsedBrief.text || `[File: ${fileObj.name} — ${fileBuffer.length} bytes]`);
         } catch (fileErr) {
-          console.warn(`[Parse Warning] ${file.originalname}: ${fileErr.message}`);
+          console.warn(`[Parse Warning] ${fileObj.name}: ${fileErr.message}`);
           finalBriefText = (finalBriefText ? finalBriefText + "\n\n" : "") +
-                           `=== MULTIMEDIA BRIEF ATTACHMENT (${file.originalname}) ===\n[File uploaded: ${file.buffer.length} bytes]`;
+                           `=== MULTIMEDIA BRIEF ATTACHMENT (${fileObj.name}) ===\n[File uploaded successfully]`;
         }
       }
     }
 
-    if (!finalBriefText) {
+    if (!finalBriefText || !finalBriefText.trim()) {
       return res.status(400).json({ error: 'Brief guidelines text or reference files are required.' });
     }
 
