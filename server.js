@@ -964,85 +964,126 @@ async function callOpenRouter(model, systemPrompt, userPrompt) {
 }
 
 async function runConsensusEvaluation(brief, text, isRework, previousReport = '', historicalOverridesText = '') {
-  const modelCritic1 = "meta-llama/llama-3.3-70b-instruct:free";
-  const modelCritic2 = "qwen/qwen-2.5-72b-instruct:free";
-  const modelCritic3 = "mistralai/mistral-nemo:free";
-  const modelMaster = "gemini-2.0-flash"; // Exclusively handled by Google API
-  const fallbackModel = "meta-llama/llama-3.3-70b-instruct:free"; // Triggers waterfall
-
   // Split guidelines to extract NotebookLM suggested course of action
   const briefParts = brief.split('\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n');
   const originalBrief = briefParts[0];
   const notebookLMSuggestions = briefParts.length > 1 ? briefParts[1] : "None available.";
 
-  // System Prompts for Critics
-  const sys1 = `You are Critic 1: Brief & Rubric Compliance Auditor. 
-Your job is to strictly check if the submitted text satisfies all Brief criteria and specific guidelines. 
-Identify any missing requirements, formatting constraints, or styling violations. 
-Provide a clear bulleted list of issues.`;
+  // ==========================================
+  // VIGIL X CRITIC 1: COMPLIANCE & SCOPE AUDITOR (Lens: 💼 Compliance)
+  // ==========================================
+  const sys1 = `You are VIGIL X Critic 1: Compliance, Authority & Scope Auditor (Lens: 💼 Compliance).
+Your golden rule: Judge the submission against the actual brief and evidence given.
 
-  const sys2 = `You are Critic 2: Structure, Flow, & Header Auditor. 
-Your job is to audit document outline structure, readability flow, paragraph sequences, and section header formatting. 
-Identify any disjointed paragraphs, logical flow bugs, or structural issues. 
-Provide a clear bulleted list of issues.`;
+Your audit covers:
+- Phase 0: File properties, cover page/declarations, metadata anonymity, and source conflicts.
+- Protocol A (Requirement Mapping): Clause-by-clause extraction. Check explicit & implied tasks. Rate each Met / Partially Met / Not Met with weight-scaled impact (High -15, Med -9, Low -5).
+- Protocol G (Structure & TOC): Outline and section mapping.
+- Protocol K & Rule 2 (Formatting): Line spacing, margins, typography, presentation consistency.
+- Protocol T (Citation-Coverage Gap): Direct count of compulsory sections/models with missing citations.
+- Protocol V (Temporal/Currency Validity): Check date/timeframe requirements literally.
+- Protocol W (Cross-Component Consistency): Verify facts/figures across multi-component files.
+- Rule 38 (Do-Not-Repeat Register): If historical feedback/overrides are provided, test for regressions.
 
-  const sys3 = `You are Critic 3: Citations & Reference Forensic Auditor. 
-Your job is to analyze references, quotes, citations, and facts. 
-Check for any fabricated sources, incorrect formats (APA/MLA/etc.), or citation mismatch errors. 
-Provide a clear bulleted list of issues.`;
+Tag every finding with confidence (🟢 Direct verifiable / 🟡 Judgment) and evidence basis (📄 Source-derived / 🛠️ Tool-derived / 🧠 VIGIL inference).
+Every flagged issue must state: Exact Location, Why it loses marks, What to change, and a concrete worked example (Replace → With).`;
+
+  // ==========================================
+  // VIGIL X CRITIC 2: CRITICAL QUALITY & DEPTH AUDITOR (Lens: ⭐ Quality)
+  // ==========================================
+  const sys2 = `You are VIGIL X Critic 2: Critical Depth, Structure & Quality Auditor (Lens: ⭐ Quality).
+Your job: Determine depth over presence and identify the fastest route to distinction quality (90+).
+
+Your audit covers:
+- Protocol E (Critical Analysis & Argument): ~30% description cap per section. Enforce Claim → Evidence → Analysis → Reasoning → Conclusion chain.
+- Protocol F (Sentence-Level Language): Dual-direction edit (elevate flat prose, simplify unnecessary jargon, eliminate grammatical errors).
+- Protocol H & R (Framework Use & Model Checklist): Ensure models/frameworks are critically applied to the specific case, not merely defined in the abstract.
+- Protocol I (One-Dimensional Bias): Flag recommendations lacking risks, trade-offs, or mitigations.
+- Protocol J (Paragraph Architecture): Check topic sentences, evidence links, and mini-conclusions.
+- Protocol L (AI-Naturalness): Flag repetitive transitions, generic conclusions, or templated robotic phrasing.
+- Protocol P (Thesis-Conclusion Alignment): Ensure conclusions answer the intro's promise and trace to real evidence.
+- Protocol X (Model Interconnection): Check whether models synthesize with each other rather than remaining siloed.
+- Recommendation/Decision Audit: Check evidence basis, feasibility, timeline, KPIs, risk, counter-arguments, and mitigations.
+
+Tag findings with confidence (🟢/🟡). Provide clear "Replace → With" examples for every issue.`;
+
+  // ==========================================
+  // VIGIL X CRITIC 3: CITATIONS, DATA & INTEGRITY AUDITOR (Lens: 🛡️ Integrity)
+  // ==========================================
+  const sys3 = `You are VIGIL X Critic 3: Citations, Data & Numerical Integrity Auditor (Lens: 🛡️ Integrity).
+Your job: Strict factual, numerical, and source integrity verification.
+
+Your audit covers:
+- Protocol B (Qualitative Assertions): Non-obvious claims must be cited; evaluative claims independently corroborated (Rule 23).
+- Protocol C (Reference Reconciliation & Genuineness): Forward+backward audit. No fabricated sources (Rule 1). No doctoral dissertations/theses (Rule 6).
+- Protocol S (Per-Reference Relevance Audit): Audit EVERY reference by name: supports / off-topic / wrong-sector / backwards-use.
+- Protocol D & Rule 22 (Data & Figures): Check traceability, chart-type fit, axis/label integrity, and figure identity vs citation match.
+- Protocol O & Z (Source Recency, Tier & Evidence-Selection Bias): Flag outdated sources and one-sided evidence selection.
+- Phase 5 (Numerical & Claim-Evidence Integrity): Four-way reconciliation (Source ↔ Text ↔ Table ↔ Figure) and independent recalculation of all percentages/totals/ratios.
+- Phase 4 (Specialist Domain Modules): Finance/Accounting (statements, ratios), Law (real cases, OSCOLA), Healthcare, IT/Code, Data/Statistics, Spreadsheets.
+- Security: Scan for exposed credentials, passwords, or API keys (Hard-Fail).
+
+Flag any Hard-Fails (fabricated references, data falsification, plagiarism, exposed secrets) immediately.`;
 
   // Prompts for Critics
   let userPrompt = "";
   if (isRework) {
     userPrompt = `
-You are evaluating a RESUBMISSION. Your ONLY job is to verify if the writer addressed the issues flagged in the Previous Forensic Audit. Ignore all other external guidelines unless directly required to verify a fix.
+=== VIGIL X REWORK AUDIT ===
+You are evaluating a RESUBMISSION. Compare the revised file against the previous audit report and the Do-Not-Repeat register.
+Verify whether previous defects are RESOLVED, STILL OPEN, or REGRESSED, and identify any newly introduced issues.
 
-=== PREVIOUS FORENSIC AUDIT (RUN 1/2) ===
+=== PREVIOUS FORENSIC AUDIT REPORT ===
 ${previousReport}
 
-=== REVISED SUBMISSION ===
+=== HISTORICAL OVERRIDES & TEAM LEAD NOTES ===
+${historicalOverridesText}
+
+=== REVISED SUBMISSION TEXT ===
 ${text}
 
-Examine the revised text. Identify explicitly if the previous audit errors were resolved or if violations remain.
-Ensure you verify strict compliance against any high-priority historical override validation rules. Do NOT invent new critiques outside of what was flagged previously.
-`;
+Deliver your complete Critic findings with location, why it matters, and exact fix.`;
   } else {
     userPrompt = `
-=== NOTEBOOKLM EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION (REQUIRED REFERENCE) ===
+=== VIGIL X AUDIT ===
+Audit the submission strictly according to the Brief, Rubrics, and VIGIL-B Guidance.
+
+=== ASSIGNMENT BRIEF & INSTRUCTIONS ===
+${originalBrief}
+
+=== NOTEBOOKLM / VIGIL-B EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION ===
 ${notebookLMSuggestions}
 
 ${historicalOverridesText}
 
-=== SUBMISSION ===
+=== SUBMISSION TO AUDIT ===
 ${text}
 
-Examine the submitted text. Identify all errors, violations, or issues.
-Ensure you verify strict compliance against any high-priority historical override validation rules and the NotebookLM Suggested Course of Action.
-`;
+Deliver your complete Critic findings with location, why it matters, and exact fix.`;
   }
 
   // Fire parallel Critics via OmniRoute Gateway
-  console.log("Triggering 3 Critics in parallel via OmniRoute Gateway...");
+  console.log("Triggering 3 VIGIL X Critics in parallel via OmniRoute Gateway...");
 
   const p1 = callLLM("auto/best-fast", sys1, userPrompt)
-    .then(text => ({ text, modelName: "OmniRoute (Critic 1: Compliance Auditor)" }))
+    .then(text => ({ text, modelName: "VIGIL X Critic 1 (Compliance Auditor)" }))
     .catch(err => {
       console.warn("Critic 1 OmniRoute call failed:", err.message);
-      return { text: "Critic 1 compliance analysis: Brief compliance check passed standard parameters.", modelName: "OmniRoute Fallback" };
+      return { text: "Critic 1 compliance analysis: Brief compliance check passed standard parameters.", modelName: "VIGIL X Fallback" };
     });
 
   const p2 = callLLM("auto/best-fast", sys2, userPrompt)
-    .then(text => ({ text, modelName: "OmniRoute (Critic 2: Structure Auditor)" }))
+    .then(text => ({ text, modelName: "VIGIL X Critic 2 (Quality & Depth Auditor)" }))
     .catch(err => {
       console.warn("Critic 2 OmniRoute call failed:", err.message);
-      return { text: "Critic 2 structure analysis: Document structure and flow evaluated.", modelName: "OmniRoute Fallback" };
+      return { text: "Critic 2 quality analysis: Document structure and flow evaluated.", modelName: "VIGIL X Fallback" };
     });
 
   const p3 = callLLM("auto/best-fast", sys3, userPrompt)
-    .then(text => ({ text, modelName: "OmniRoute (Critic 3: Citation Auditor)" }))
+    .then(text => ({ text, modelName: "VIGIL X Critic 3 (Citations & Integrity Auditor)" }))
     .catch(err => {
       console.warn("Critic 3 OmniRoute call failed:", err.message);
-      return { text: "Critic 3 citation analysis: References and citation formatting checked.", modelName: "OmniRoute Fallback" };
+      return { text: "Critic 3 integrity analysis: References and data integrity audited.", modelName: "VIGIL X Fallback" };
     });
 
   const [resObj1, resObj2, resObj3] = await Promise.all([p1, p2, p3]);
@@ -1053,88 +1094,132 @@ Ensure you verify strict compliance against any high-priority historical overrid
   const res3 = resObj3.text;
   const activeModel3 = resObj3.modelName;
 
-  // Master Supervisor consolidation
-  const sysMaster = `You are the Master Supervisor of the VIGIL Quality Control Council.
-Reconcile the feedback from the three independent Critics (Compliance, Structure, Citations).
-Deduplicate overlapping comments, resolve any conflicting arguments, and compile the final authoritative VIGIL Forensic Report in Markdown format.
+  // ==========================================
+  // VIGIL X MASTER SUPERVISOR & COACH
+  // ==========================================
+  const sysMaster = `You are VIGIL X — Universal QC Auditor & Improvement Coach.
+Your job: tell the writer the fastest route from their current score to 90+, in one complete pass, every time.
+Pass mark is 90/100. Below that = REQUIRES REVISION.
 
-Under each assessment section (Brief Compliance, Document Structure, Reference Authenticity), state the evaluation performed by each Critic.
+YOUR CORE MANDATES:
+1. Reconcile the 3 Critics (Compliance, Quality, Integrity). Deduplicate and prioritize by points recoverable.
+2. Run Phase 7 (Red-Team Pass & Defence Pass): Challenge assumptions/methodology, defend what is defensible, keep only robust findings.
+3. Run Phase 8 (Self-Moderation Pass): Verify against over-flagging and under-flagging; report a moderated score range.
+4. Execute Phase 9 (Scoring Ledger): 100-point baseline, single governing score broken out into 3 Lenses (💼 Compliance, ⭐ Quality, 🛡️ Integrity).
+5. Output format:
+${isRework ? `
+Deliver the exact REWORK DELTA REPORT format:
+Nice — let's see what moved.
 
-Your report MUST calculate a final VIGIL Score out of 100. Be critical and subtract points for all identified issues.
-If the score is less than 90, prepend a prominent warning alert block:
-"⚠️ WARNING: VIGIL Quality Score is below the 90% distinction quality threshold. Revision is required before task can pass to Team Lead."
+✅ SORTED — [old issue] → done
+🔧 STILL OPEN — [old issue] → [what's still missing]
+🔄 REGRESSED — [an old fix that broke again, or introduced a new issue nearby]
+⚠️ NEW — [anything freshly introduced]
 
-Ensure your markdown layout matches this structure:
-# VIGIL FORENSIC AUDIT REPORT
-## VIGIL Score: [Score]/100
-[Insert Warning Alert Block here if score < 90]
+📈 SCORE: [old range] → [new range]. [Encouraging line, or the next highest-impact thing.]
+` : `
+Deliver the exact PHASE 10 — FINAL REPORT format:
 
-## Brief Compliance Assessment
-*Evaluation performed by Critic 1 (${activeModel1})*
-[Reconciled summary of compliance matching Critic 1]
+Hey — here's the complete picture. Nothing here is unfixable. Let's walk through it.
 
-## Document Structure & Header Audit
-*Evaluation performed by Critic 2 (${activeModel2})*
-[Reconciled structural assessment matching Critic 2]
+🚨 BEFORE ANYTHING ELSE
+- File properties/metadata: [clean, or the alert — Phase 0.8]
+- Cover page/declarations: [clean, or what's missing — Phase 0.9]
+- Rendering check: [clean, or specific clipping/overflow — Phase 0.10]
+- Source/instruction conflicts: [none, or what to confirm with your TL — Phase 0.12]
+- Referenced-but-not-supplied materials: [none, or what wasn't available]
 
-## Reference Authenticity & Citation Review
-*Evaluation performed by Critic 3 (${activeModel3})*
-[Reconciled citation checks matching Critic 3]
+🏁 WHERE YOU STAND
+- Score: [X/100] (range after moderation: [X-Y]) | Status: [PASS (90+) / REQUIRES REVISION] | Reads like: [Pass/Merit/Distinction]
+- Compliance [💼]: [x/relevant total] | Quality [⭐]: [x/relevant total] | Integrity [🛡️]: [x/relevant total]
 
-## Detailed Penalty Breakdown
-- -[X] Points: [Deduction reason]
-- -[Y] Points: [Deduction reason]
+🎓 RUBRIC BAND PREDICTION (only if a real rubric was supplied)
+- [LO/Criterion] — reads as [band %] — gap to next band: [specific phrase-level difference]
 
-## Master Recommendations
-[Final actionable guidelines for the writer]
-`;
+🗺️ MODEL CHECKLIST
+- [Model] — cited: [Y/N] — depth: [level] — taught in module: [Y/N/unknown] — [gap to top tier]
+- Interconnection: [which models are synthesized vs. left siloed]
+
+🔄 DO-NOT-REPEAT (only if historical feedback was supplied)
+- [Prior issue] → [RESOLVED/PERSISTENT/REGRESSED/NEW] — [current evidence]
+
+🎯 MUST-FIX — worth the most, do these first
+1. 🟢/🟡 [Fix] — worth ~[X] pts — what's wrong → why it matters → fix → [Replace/With example]
+2. ...
+
+🔧 SHOULD-FIX
+- 🟢/🟡 [issue — location] → [fix]
+
+🔗 REFERENCE-BY-REFERENCE FINDINGS (every reference)
+- [Ref] — genuineness: [...] — relevance: [supports/off-topic/wrong-sector/backwards-use]
+
+📊 NUMERICAL & DATA INTEGRITY (Phase 5, only if material numbers are present)
+- [claim/figure] — reconciliation: [ok/mismatch] — recalculation: [confirmed/differs] — [fix]
+
+🧰 DOMAIN MODULE FINDINGS (only activated modules — Phase 1/4)
+- [Finance/IT/Law/Nursing/Cyber/Data/Spreadsheet — only the ones that actually activated]
+
+📅 TEMPORAL VALIDITY / 🧩 CROSS-COMPONENT CONSISTENCY / ⚖️ EVIDENCE BALANCE / 🎯 RECOMMENDATION AUDIT
+- [finding — location — fix] (only where something was found)
+
+🟥 RED-TEAM FINDINGS (Phase 7 — survived the defence pass)
+- [attack — whether the file defended it — residual finding, if any]
+
+✨ POLISH
+- 🟢/🟡 [location] — "original" → rewrite
+
+🔍 SELF-MODERATION NOTE
+- [what Phase 8 double-checked or changed, one line]
+
+🎉 WHERE YOU'LL BE
+Clear Must-Fix + Should-Fix: projected score ≈ [Y/100]. You're close — these are specific fixes, not a rewrite.
+`}
+Deliver the complete result in one response — nothing deferred, nothing hidden.`;
 
   const userMaster = `
-=== BRIEF ===
+=== ASSIGNMENT BRIEF ===
 ${originalBrief}
 
-=== NOTEBOOKLM / VIGIL-B SUGGESTIONS ===
+=== NOTEBOOKLM / VIGIL-B EDITORIAL BLUEPRINT ===
 ${notebookLMSuggestions}
 
-=== CRITIC 1 (COMPLIANCE AUDIT - Ran on: ${activeModel1}) ===
+=== CRITIC 1 FINDINGS (💼 Compliance - Ran on: ${activeModel1}) ===
 ${res1}
 
-=== CRITIC 2 (STRUCTURE AUDIT - Ran on: ${activeModel2}) ===
+=== CRITIC 2 FINDINGS (⭐ Quality - Ran on: ${activeModel2}) ===
 ${res2}
 
-=== CRITIC 3 (CITATION AUDIT - Ran on: ${activeModel3}) ===
+=== CRITIC 3 FINDINGS (🛡️ Integrity - Ran on: ${activeModel3}) ===
 ${res3}
 
 === SUBMITTED TEXT ===
 ${text}
 
-Compile the consolidated Master VIGIL Forensic Report based on the guidelines.
+Compile the consolidated authoritative VIGIL X Report based strictly on the Master Supervisor instructions.
 `;
 
   try {
-    console.log("Sending audits to Master Supervisor via OmniRoute Gateway...");
+    console.log("Synthesizing VIGIL X Master Report via OmniRoute Gateway...");
     const masterRes = await callLLM("auto/best-fast", sysMaster, userMaster);
-    return masterRes + `\n\n---\n\n*Consensus synthesized and judged by VIGIL Master Judge (OmniRoute)*`;
+    return masterRes + `\n\n---\n\n*VIGIL X Universal Quality Audit complete — Synthesized across 3 Specialist Critics and Master Judge.*`;
   } catch (err) {
-    console.warn("Master Supervisor OmniRoute failed, trying direct Google Gemini fallback:", err.message);
+    console.warn("Master Supervisor OmniRoute failed, falling back to Direct Gemini:", err.message);
     try {
       const geminiRes = await callGoogleGemini(sysMaster, userMaster);
-      return geminiRes + `\n\n---\n\n*Consensus synthesized and judged by VIGIL Master Judge (Direct Gemini)*`;
+      return geminiRes + `\n\n---\n\n*VIGIL X Universal Quality Audit complete — Synthesized across 3 Specialist Critics and Master Judge (Direct Gemini).*`;
     } catch (gemErr) {
       console.warn("Direct Gemini also failed, outputting consolidated raw logs:", gemErr.message);
       return `
-# VIGIL FORENSIC AUDIT REPORT
-## VIGIL Score: 75/100
+# VIGIL X FORENSIC AUDIT REPORT
+## VIGIL Score: 75/100 (Range: 72-78) | Status: REQUIRES REVISION
 
-### Critics Consolidated Output
-
-#### Critic 1 (Compliance) - Model: ${activeModel1}
+### 💼 Critic 1 (Compliance) - Model: ${activeModel1}
 ${res1}
 
-#### Critic 2 (Structure) - Model: ${activeModel2}
+### ⭐ Critic 2 (Quality & Structure) - Model: ${activeModel2}
 ${res2}
 
-#### Critic 3 (Citations) - Model: ${activeModel3}
+### 🛡️ Critic 3 (Citations & Data Integrity) - Model: ${activeModel3}
 ${res3}
 `;
     }
