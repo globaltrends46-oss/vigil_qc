@@ -475,21 +475,78 @@ async function executeQC(isRework) {
 
     const data = await res.json();
 
-    // Render consolidated markdown report
+    // Render initial report state (with progress indicator)
     reportViewContent.innerHTML = formatMarkdown(data.report);
 
     // Render programmatic metrics
     renderLayoutAnalytics(data);
 
-    // Reload tasks list quietly in background to save state
-    await loadTasksList(activeTaskCode);
+    // If audit is processing async in background, start automatic polling
+    if (data.status === 'processing' || (data.report && data.report.includes('⏳'))) {
+      const pollTaskCode = activeTaskCode;
+      let attempts = 0;
+      const maxAttempts = 30; // 30 * 2.5s = 75s max
+
+      const pollInterval = setInterval(async () => {
+        attempts++;
+        if (attempts > maxAttempts || activeTaskCode !== pollTaskCode) {
+          clearInterval(pollInterval);
+          btnExecuteAudit.disabled = false;
+          btnExecuteAudit.textContent = "⚡ RUN AUTOMATED FORENSIC QC";
+          if (btnExecuteResubmit) {
+            btnExecuteResubmit.disabled = false;
+            btnExecuteResubmit.textContent = "🔄 RESUBMIT FOR RE-EVALUATION (FEEDBACK CHECK ONLY)";
+          }
+          auditLoading.classList.add('hidden');
+          return;
+        }
+
+        try {
+          const checkRes = await fetch(`${API_BASE}/api/tasks`, {
+            headers: { 'X-User-Email': currentUserEmail }
+          });
+          if (checkRes.ok) {
+            const allTasks = await checkRes.json();
+            const currentTask = allTasks.find(t => t.task_code === pollTaskCode);
+            if (currentTask && currentTask.qc_log_payload) {
+              // Check if evaluation finished (contains score or VIGIL Report and no longer ends with ⏳)
+              const payload = currentTask.qc_log_payload;
+              const isFinished = !payload.endsWith('seconds.') && (payload.includes('VIGIL Score') || payload.includes('VIGIL FORENSIC AUDIT REPORT'));
+              
+              reportViewContent.innerHTML = formatMarkdown(payload);
+
+              if (isFinished) {
+                clearInterval(pollInterval);
+                btnExecuteAudit.disabled = false;
+                btnExecuteAudit.textContent = "⚡ RUN AUTOMATED FORENSIC QC";
+                if (btnExecuteResubmit) {
+                  btnExecuteResubmit.disabled = false;
+                  btnExecuteResubmit.textContent = "🔄 RESUBMIT FOR RE-EVALUATION (FEEDBACK CHECK ONLY)";
+                }
+                auditLoading.classList.add('hidden');
+                await loadTasksList(pollTaskCode);
+              }
+            }
+          }
+        } catch (pollErr) {
+          console.warn('[Polling check error]', pollErr.message);
+        }
+      }, 2500);
+    } else {
+      btnExecuteAudit.disabled = false;
+      btnExecuteAudit.textContent = "⚡ RUN AUTOMATED FORENSIC QC";
+      if (btnExecuteResubmit) {
+        btnExecuteResubmit.disabled = false;
+        btnExecuteResubmit.textContent = "🔄 RESUBMIT FOR RE-EVALUATION (FEEDBACK CHECK ONLY)";
+      }
+      auditLoading.classList.add('hidden');
+      await loadTasksList(activeTaskCode);
+    }
 
   } catch (err) {
     alert(`QC Audit Failed: ${err.message}`);
-  } finally {
     btnExecuteAudit.disabled = false;
     btnExecuteAudit.textContent = "⚡ RUN AUTOMATED FORENSIC QC";
-    
     if (btnExecuteResubmit) {
       btnExecuteResubmit.disabled = false;
       btnExecuteResubmit.textContent = "🔄 RESUBMIT FOR RE-EVALUATION (FEEDBACK CHECK ONLY)";
