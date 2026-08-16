@@ -1063,23 +1063,23 @@ Deliver your complete Critic findings with location, why it matters, and exact f
   }
 
   // Fire parallel Critics via OmniRoute Gateway
-  console.log("Triggering 3 VIGIL X Critics in parallel via OmniRoute Gateway...");
+  console.log("Triggering 3 VIGIL X Critics in parallel via OmniRoute Gateway (gemini/gemini-2.5-flash)...");
 
-  const p1 = callLLM("auto/best-fast", sys1, userPrompt)
+  const p1 = callLLM("gemini/gemini-2.5-flash", sys1, userPrompt)
     .then(text => ({ text, modelName: "VIGIL X Critic 1 (Compliance Auditor)" }))
     .catch(err => {
       console.warn("Critic 1 OmniRoute call failed:", err.message);
       return { text: "Critic 1 compliance analysis: Brief compliance check passed standard parameters.", modelName: "VIGIL X Fallback" };
     });
 
-  const p2 = callLLM("auto/best-fast", sys2, userPrompt)
+  const p2 = callLLM("gemini/gemini-2.5-flash", sys2, userPrompt)
     .then(text => ({ text, modelName: "VIGIL X Critic 2 (Quality & Depth Auditor)" }))
     .catch(err => {
       console.warn("Critic 2 OmniRoute call failed:", err.message);
       return { text: "Critic 2 quality analysis: Document structure and flow evaluated.", modelName: "VIGIL X Fallback" };
     });
 
-  const p3 = callLLM("auto/best-fast", sys3, userPrompt)
+  const p3 = callLLM("gemini/gemini-2.5-flash", sys3, userPrompt)
     .then(text => ({ text, modelName: "VIGIL X Critic 3 (Citations & Integrity Auditor)" }))
     .catch(err => {
       console.warn("Critic 3 OmniRoute call failed:", err.message);
@@ -1199,8 +1199,8 @@ Compile the consolidated authoritative VIGIL X Report based strictly on the Mast
 `;
 
   try {
-    console.log("Synthesizing VIGIL X Master Report via OmniRoute Gateway...");
-    const masterRes = await callLLM("auto/best-fast", sysMaster, userMaster);
+    console.log("Synthesizing VIGIL X Master Report via OmniRoute Gateway (gemini/gemini-2.5-flash)...");
+    const masterRes = await callLLM("gemini/gemini-2.5-flash", sysMaster, userMaster);
     return masterRes + `\n\n---\n\n*VIGIL X Universal Quality Audit complete — Synthesized across 3 Specialist Critics and Master Judge.*`;
   } catch (err) {
     console.warn("Master Supervisor OmniRoute failed, falling back to Direct Gemini:", err.message);
