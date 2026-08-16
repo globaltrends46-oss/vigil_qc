@@ -36,7 +36,7 @@ async function callLLM(model, systemPrompt, userPrompt) {
   const targetModel = model || 'gemini/gemini-2.5-flash';
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
+  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
 
   try {
     const response = await fetch(omniGatewayUrl, {
@@ -49,8 +49,8 @@ async function callLLM(model, systemPrompt, userPrompt) {
       body: JSON.stringify({
         model: targetModel,
         stream: false,
-        max_tokens: 1000,
-        temperature: 0.1,
+        max_tokens: 1500,
+        temperature: 0.15,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt }
@@ -63,41 +63,46 @@ async function callLLM(model, systemPrompt, userPrompt) {
     if (response.ok) {
       const rawText = await response.text();
       const cleanContent = extractContentFromSSEResponse(rawText);
-      if (cleanContent) {
+      if (cleanContent && cleanContent.trim()) {
         return cleanContent;
       }
     } else {
       console.warn(`[OmniRoute] Model ${targetModel} returned HTTP ${response.status}. Retrying with auto/best-fast...`);
-      // Fallback directly to auto/best-fast if specific model 404s
-      if (targetModel !== 'auto/best-fast') {
-        const retryRes = await fetch(omniGatewayUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model: 'auto/best-fast',
-            stream: false,
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: userPrompt }
-            ]
-          })
-        });
-        if (retryRes.ok) {
-          const retryText = await retryRes.text();
-          const clean = extractContentFromSSEResponse(retryText);
-          if (clean) return clean;
-        }
+      const retryRes = await fetch(omniGatewayUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: 'auto/best-fast',
+          stream: false,
+          max_tokens: 1500,
+          temperature: 0.15,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt }
+          ]
+        })
+      });
+      if (retryRes.ok) {
+        const retryText = await retryRes.text();
+        const clean = extractContentFromSSEResponse(retryText);
+        if (clean && clean.trim()) return clean;
       }
     }
   } catch (err) {
     clearTimeout(timeoutId);
-    console.warn(`[OmniRoute Gateway] Call to ${omniGatewayUrl} failed: ${err.message}`);
+    console.warn(`[OmniRoute Gateway] Call failed: ${err.message}. Trying direct Google Gemini...`);
+    try {
+      return await callGoogleGemini(systemPrompt, userPrompt);
+    } catch (gErr) {
+      console.error(`[LLM Error] Direct Gemini also failed: ${gErr.message}`);
+      throw err;
+    }
   }
 
-  return await callLLMWithMeta(model, systemPrompt, userPrompt);
+  throw new Error(`Failed to generate LLM response from OmniRoute (${targetModel})`);
 }
 
 // Global exception safety guards to prevent container exit
