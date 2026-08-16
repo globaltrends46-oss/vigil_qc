@@ -1,10 +1,3 @@
-const dns = require('dns');
-// Force public DNS (Google + Cloudflare) to fix ENOTFOUND on Hostinger for Supabase
-dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1']);
-if (dns.setDefaultResultOrder) {
-  dns.setDefaultResultOrder('ipv4first');
-}
-
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -110,45 +103,11 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB file limit
 });
 
-// Initialize Supabase Client with custom DNS resolver (bypasses Hostinger DNS issues)
-const https = require('https');
-const { Resolver } = require('dns').promises;
-
-// Use Google + Cloudflare public DNS to fix ENOTFOUND on Hostinger
-const dnsResolver = new Resolver();
-dnsResolver.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1']);
-
-// Custom HTTPS agent that forces public DNS for all outbound requests
-const { lookup: osLookup } = require('dns');
-const customHttpsAgent = new https.Agent({
-  keepAlive: true,
-  lookup: (hostname, options, callback) => {
-    dnsResolver.resolve4(hostname)
-      .then(addresses => {
-        if (addresses && addresses.length > 0) {
-          callback(null, addresses[0], 4);
-        } else {
-          // Empty result — fall back to OS DNS
-          osLookup(hostname, { family: 4 }, callback);
-        }
-      })
-      .catch(() => {
-        // Custom DNS failed — fall back to OS DNS lookup
-        osLookup(hostname, options, callback);
-      });
-  }
-});
-
+// Initialize Supabase Client
 const supabaseUrl = process.env.SUPABASE_URL || "https://wlqyxcqofnsyqvkhuhgy.supabase.co";
 const supabaseKey = process.env.SUPABASE_KEY || "sb_publishable_dRQBQWsumkt-UYF5W0Er-w_A7oeQ7qn";
-const nodeFetch = require('node-fetch');
-
-// Wrap node-fetch to always use our custom DNS agent
-const supabaseFetch = (url, opts = {}) => nodeFetch(url, { agent: customHttpsAgent, ...opts });
-
 const supabase = createClient(supabaseUrl, supabaseKey, {
-  auth: { persistSession: false },
-  global: { fetch: supabaseFetch }
+  auth: { persistSession: false }
 });
 
 // Inject NotebookLM Cookie
