@@ -1,4 +1,6 @@
 const dns = require('dns');
+// Force public DNS (Google + Cloudflare) to fix ENOTFOUND on Hostinger for Supabase
+dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1']);
 if (dns.setDefaultResultOrder) {
   dns.setDefaultResultOrder('ipv4first');
 }
