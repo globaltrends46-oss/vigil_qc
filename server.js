@@ -119,16 +119,22 @@ const dnsResolver = new Resolver();
 dnsResolver.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1']);
 
 // Custom HTTPS agent that forces public DNS for all outbound requests
+const { lookup: osLookup } = require('dns');
 const customHttpsAgent = new https.Agent({
   keepAlive: true,
   lookup: (hostname, options, callback) => {
     dnsResolver.resolve4(hostname)
-      .then(addresses => callback(null, addresses[0], 4))
+      .then(addresses => {
+        if (addresses && addresses.length > 0) {
+          callback(null, addresses[0], 4);
+        } else {
+          // Empty result — fall back to OS DNS
+          osLookup(hostname, { family: 4 }, callback);
+        }
+      })
       .catch(() => {
-        // Fallback: try resolve6
-        dnsResolver.resolve6(hostname)
-          .then(addresses => callback(null, addresses[0], 6))
-          .catch(err => callback(err));
+        // Custom DNS failed — fall back to OS DNS lookup
+        osLookup(hostname, options, callback);
       });
   }
 });
@@ -1346,9 +1352,19 @@ Verify similarity and output the JSON structure.
   }
 }
 
-// Create task (TL Only) — accepts JSON with base64-encoded files
-app.post('/api/tasks', verifyUser, async (req, res) => {
-  const { task_code, client_id, assigned_writer_email, brief_text, deadline, invoicing_amount, earnings_amount, files: base64Files } = req.body;
+// Create task (TL Only) — accepts BOTH multipart/form-data AND JSON+base64
+app.post('/api/tasks', verifyUser, upload.any(), async (req, res) => {
+  // Support both old multipart format and new JSON+base64 format
+  const body = req.body || {};
+  const task_code = body.task_code;
+  const client_id = body.client_id;
+  const assigned_writer_email = body.assigned_writer_email;
+  const brief_text = body.brief_text;
+  const deadline = body.deadline;
+  const invoicing_amount = body.invoicing_amount;
+  const earnings_amount = body.earnings_amount;
+  const base64Files = body.files; // JSON mode: array of {name, data, type}
+
   if (!task_code) {
     return res.status(400).json({ error: 'Missing mandatory field: task_code' });
   }
@@ -1356,11 +1372,12 @@ app.post('/api/tasks', verifyUser, async (req, res) => {
   const writerEmail = assigned_writer_email || 'local-writer@vigil.com';
 
   try {
-    // STEP 1: Decode base64 files and parse text content
     let finalBriefText = brief_text || '';
+
+    // Mode A: New JSON+base64 file upload
     if (base64Files && Array.isArray(base64Files) && base64Files.length > 0) {
       for (const fileObj of base64Files) {
-        console.log(`Parsing brief attachment: ${fileObj.name}...`);
+        console.log(`[JSON Mode] Parsing brief attachment: ${fileObj.name}...`);
         try {
           const fileBuffer = Buffer.from(fileObj.data, 'base64');
           const parsedBrief = await parseDocument(fileBuffer, fileObj.name);
@@ -1371,6 +1388,23 @@ app.post('/api/tasks', verifyUser, async (req, res) => {
           console.warn(`[Parse Warning] ${fileObj.name}: ${fileErr.message}`);
           finalBriefText = (finalBriefText ? finalBriefText + "\n\n" : "") +
                            `=== MULTIMEDIA BRIEF ATTACHMENT (${fileObj.name}) ===\n[File uploaded successfully]`;
+        }
+      }
+    }
+
+    // Mode B: Old multipart file upload (fallback for cached old app.js)
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        console.log(`[Multipart Mode] Parsing brief attachment: ${file.originalname}...`);
+        try {
+          const parsedBrief = await parseDocument(file.buffer, file.originalname);
+          finalBriefText = (finalBriefText ? finalBriefText + "\n\n" : "") +
+                           `=== MULTIMEDIA BRIEF ATTACHMENT (${file.originalname}) ===\n` +
+                           (parsedBrief.text || `[File: ${file.originalname} — ${file.buffer.length} bytes]`);
+        } catch (fileErr) {
+          console.warn(`[Parse Warning] ${file.originalname}: ${fileErr.message}`);
+          finalBriefText = (finalBriefText ? finalBriefText + "\n\n" : "") +
+                           `=== MULTIMEDIA BRIEF ATTACHMENT (${file.originalname}) ===\n[File uploaded successfully]`;
         }
       }
     }
