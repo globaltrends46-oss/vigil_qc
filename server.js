@@ -256,31 +256,39 @@ function fragmentSections(text) {
   return result;
 }
 
-// Call OpenRouter to parse dynamic word count distributions from the brief instructions
-async function extractBriefSectionDistribution(briefText) {
+// Instant rule-based word count section distribution parser
+function extractBriefSectionDistribution(briefText) {
+  const defaultDist = {
+    "Introduction": 10,
+    "Literature Review": 30,
+    "Findings": 50,
+    "Conclusion": 10
+  };
+
+  if (!briefText) return defaultDist;
+
+  // Check for explicit percentages in brief text (e.g. Intro 15%, Lit Review 35%)
   try {
-    const systemPrompt = `You are a VIGIL Brief Parameter Extractor. Read the assignment brief guidelines and extract the percentage word count targets or absolute word count targets allocated for each section: "Introduction", "Literature Review", "Findings" (or Methodology/Discussion), and "Conclusion". 
-Return ONLY a valid JSON object mapping the section names to their percentage targets of the total document length (numbers between 0 and 100). Ensure the sum of percentages is 100 (adjust proportionally if needed). If a section is not mentioned, make a standard scholarly assignment distribution assumption:
-{
-  "Introduction": 10,
-  "Literature Review": 30,
-  "Findings": 50,
-  "Conclusion": 10
-}
-Do not output any markdown formatting, explanation, or comments. Just the raw JSON.`;
-    
-    const response = await callLLM("meta-llama/llama-3.3-70b-instruct:free", systemPrompt, `Brief: "${briefText}"`);
-    const cleanJson = response.replace(/```json/g, '').replace(/```/g, '').trim();
-    return JSON.parse(cleanJson);
-  } catch (err) {
-    console.warn("Failed to extract brief section targets, falling back to defaults:", err.message);
-    return {
-      "Introduction": 10,
-      "Literature Review": 30,
-      "Findings": 50,
-      "Conclusion": 10
-    };
-  }
+    const textLower = briefText.toLowerCase();
+    const introMatch = textLower.match(/intro\w*.*?(\d{1,2})%/);
+    const litMatch = textLower.match(/lit\w*.*?(\d{1,2})%/);
+    const concMatch = textLower.match(/conclu\w*.*?(\d{1,2})%/);
+
+    if (introMatch || litMatch || concMatch) {
+      const intro = introMatch ? parseInt(introMatch[1], 10) : 10;
+      const lit = litMatch ? parseInt(litMatch[1], 10) : 30;
+      const conc = concMatch ? parseInt(concMatch[1], 10) : 10;
+      const findings = Math.max(10, 100 - intro - lit - conc);
+      return {
+        "Introduction": intro,
+        "Literature Review": lit,
+        "Findings": findings,
+        "Conclusion": conc
+      };
+    }
+  } catch (e) {}
+
+  return defaultDist;
 }
 
 async function extractZipWords(buffer) {
@@ -1324,8 +1332,8 @@ ${newText}
 Verify similarity and output the JSON structure.
 `;
 
-    console.log("Calling OpenRouter semantic concept paraphrase checker...");
-    const rawResult = await callLLM("meta-llama/llama-3.3-70b-instruct:free", sysPrompt, userPrompt);
+    console.log("Calling OmniRoute semantic concept paraphrase checker...");
+    const rawResult = await callLLM("auto/best-fast", sysPrompt, userPrompt);
     
     // Clean JSON response
     const cleanedJson = rawResult.replace(/```json/i, '').replace(/```/g, '').trim();
