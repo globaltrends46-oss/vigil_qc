@@ -49,6 +49,8 @@ async function callLLM(model, systemPrompt, userPrompt) {
       body: JSON.stringify({
         model: targetModel,
         stream: false,
+        max_tokens: 1000,
+        temperature: 0.1,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt }
