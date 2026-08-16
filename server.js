@@ -1942,64 +1942,18 @@ app.post('/api/tasks/:code/audit', verifyUser, upload.any(), async (req, res) =>
 
     const updatedValidationRules = combinedValidationRules + programmaticAuditText;
 
-    // 9. Create initial audit stamp and respond immediately to prevent 504 gateway timeout
+    // 9. Execute VIGIL X Forensic Audit (via gemini/gemini-2.5-flash)
+    console.log(`[VIGIL X] Executing 3 Critics + Master Judge pass ${currentCount} for task ${code}...`);
+    const auditReport = await runConsensusEvaluation(
+      task.brief_text,
+      parsed.text,
+      isRework,
+      task.qc_log_payload,
+      updatedValidationRules
+    );
+
     const filenamesList = req.files.map(f => f.originalname).join(', ');
-    const initialAuditStamp = `### [RUN ${currentCount} FORENSIC PASS]
-- **File Name:** ${filenamesList}
-- **Originality Check:** ${isDuplicated ? '⚠️ DUPLICATE SUBMISSION DETECTED' : '✅ UNIQUE SUBMISSION'}
-- **Parsed Word Count:** ${parsed.wordCount} words
-- **File SHA-256 Hash:** ${textHash}
-- **Timestamp:** ${new Date().toISOString()}
-
-⏳ **VIGIL AI Critics & Master Supervisor are evaluating the submission in real-time...**
-*(Critic 1: Compliance, Critic 2: Structure, Critic 3: Citations, Master Judge)*
-
-*The comprehensive forensic report will automatically update on this screen within 15–20 seconds.*`;
-
-    let initialPayload = task.qc_log_payload || '';
-    const divider = `\n\n---\n\n`;
-    if (initialPayload) {
-      initialPayload += divider + initialAuditStamp;
-    } else {
-      initialPayload = initialAuditStamp;
-    }
-
-    // Save initial status to DB
-    await supabase
-      .from('qc_tasks')
-      .update(sanitizeObjectForPostgres({
-        qc_count: currentCount,
-        qc_log_payload: initialPayload,
-        words_completed: parsed.wordCount,
-        submitted_text: parsed.text
-      }))
-      .eq('task_code', code);
-
-    // Respond immediately to client (0 timeout risk!)
-    res.json({
-      success: true,
-      status: 'processing',
-      report: initialAuditStamp,
-      wordCount: parsed.wordCount,
-      qc_count: currentCount,
-      isDuplicated,
-      formatting,
-      sectionAnalytics
-    });
-
-    // 10. Run Full AI Evaluation Async in Background
-    setImmediate(async () => {
-      try {
-        console.log(`[VIGIL QC Background] Running 3 Critics + Master Supervisor for task ${code}...`);
-        const auditReport = await runConsensusEvaluation(
-          task.brief_text,
-          parsed.text,
-          isRework,
-          task.qc_log_payload,
-          updatedValidationRules
-        );
-
-        const fullAuditStamp = `### [RUN ${currentCount} FORENSIC PASS]
+    const fullAuditStamp = `### [RUN ${currentCount} FORENSIC PASS]
 - **File Name:** ${filenamesList}
 - **Originality Check:** ${isDuplicated ? '⚠️ DUPLICATE SUBMISSION DETECTED' : '✅ UNIQUE SUBMISSION'}
 - **Parsed Word Count:** ${parsed.wordCount} words
@@ -2008,58 +1962,66 @@ app.post('/api/tasks/:code/audit', verifyUser, upload.any(), async (req, res) =>
 
 ${auditReport}`;
 
-        let finalPayload = task.qc_log_payload || '';
-        if (finalPayload) {
-          finalPayload += divider + fullAuditStamp;
-        } else {
-          finalPayload = fullAuditStamp;
-        }
+    let updatedPayload = task.qc_log_payload || '';
+    const divider = `\n\n---\n\n`;
+    if (updatedPayload) {
+      updatedPayload += divider + fullAuditStamp;
+    } else {
+      updatedPayload = fullAuditStamp;
+    }
 
-        // Parse VIGIL Score
-        const scoreMatch = auditReport.match(/Score:\s*(\d+)\/100/i) || 
-                           auditReport.match(/VIGIL Score:\s*(\d+)/i) || 
-                           auditReport.match(/Score:\s*(\d+)/i);
-        let baseScore = 100;
-        if (scoreMatch) {
-          baseScore = parseInt(scoreMatch[1], 10);
-        }
+    // 10. Parse VIGIL Score
+    const scoreMatch = auditReport.match(/Score:\s*(\d+)\/100/i) || 
+                       auditReport.match(/VIGIL Score:\s*(\d+)/i) || 
+                       auditReport.match(/Score:\s*(\d+)/i);
+    let baseScore = 100;
+    if (scoreMatch) {
+      baseScore = parseInt(scoreMatch[1], 10);
+    }
 
-        const totalDeduction = layoutDeductions + structuralDeductions;
-        const finalVigilScore = Math.max(0, baseScore - totalDeduction);
-        const satisfiesThreshold = finalVigilScore >= 90;
+    const totalDeduction = layoutDeductions + structuralDeductions;
+    const finalVigilScore = Math.max(0, baseScore - totalDeduction);
+    const satisfiesThreshold = finalVigilScore >= 90;
 
-        // Save complete final audit report to DB
-        await supabase
-          .from('qc_tasks')
-          .update(sanitizeObjectForPostgres({
-            qc_count: currentCount,
-            qc_log_payload: finalPayload,
-            words_completed: parsed.wordCount,
-            submitted_text: parsed.text
-          }))
-          .eq('task_code', code);
+    // 11. Save complete final audit report to DB
+    await supabase
+      .from('qc_tasks')
+      .update(sanitizeObjectForPostgres({
+        qc_count: currentCount,
+        qc_log_payload: updatedPayload,
+        words_completed: parsed.wordCount,
+        submitted_text: parsed.text
+      }))
+      .eq('task_code', code);
 
-        // Post chat log
-        let chatMsg = `⚙️ SYSTEM: Document(s) "${filenamesList}" evaluated. Pass ${currentCount} completed. Words: ${parsed.wordCount}. VIGIL Score: ${finalVigilScore}/100. `;
-        if (satisfiesThreshold) {
-          chatMsg += `✅ PASS: Distinction quality standard met (90%+). Task is ready for Team Lead sign-off.`;
-        } else {
-          chatMsg += `⚠️ WARNING: VIGIL Quality Score is below the 90% distinction threshold. Revision required.`;
-        }
-        if (totalDeduction > 0) {
-          chatMsg += ` (Programmatic penalty: -${totalDeduction})`;
-        }
+    // 12. Post chat log
+    let chatMsg = `⚙️ SYSTEM: Document(s) "${filenamesList}" evaluated. Pass ${currentCount} completed. Words: ${parsed.wordCount}. VIGIL Score: ${finalVigilScore}/100. `;
+    if (satisfiesThreshold) {
+      chatMsg += `✅ PASS: Distinction quality standard met (90%+). Task is ready for Team Lead sign-off.`;
+    } else {
+      chatMsg += `⚠️ WARNING: VIGIL Quality Score is below the 90% distinction threshold. Revision required.`;
+    }
+    if (totalDeduction > 0) {
+      chatMsg += ` (Programmatic penalty: -${totalDeduction})`;
+    }
 
-        await supabase.from('task_chats').insert(sanitizeObjectForPostgres([{
-          task_code: code,
-          sender_email: 'vigil.system@vigil.com',
-          message_text: chatMsg
-        }]));
+    await supabase.from('task_chats').insert(sanitizeObjectForPostgres([{
+      task_code: code,
+      sender_email: 'vigil.system@vigil.com',
+      message_text: chatMsg
+    }]));
 
-        console.log(`[VIGIL QC Background] Audit complete and saved for ${code}! Score: ${finalVigilScore}/100`);
-      } catch (bgErr) {
-        console.error(`[VIGIL QC Background ERROR] ${bgErr.message}`);
-      }
+    // 13. Respond directly with complete authoritative report
+    res.json({
+      success: true,
+      report: fullAuditStamp,
+      wordCount: parsed.wordCount,
+      qc_count: currentCount,
+      isDuplicated,
+      vigilScore: finalVigilScore,
+      satisfiesThreshold,
+      formatting,
+      sectionAnalytics
     });
   } catch (err) {
     console.error(err);
