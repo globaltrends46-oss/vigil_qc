@@ -33,10 +33,10 @@ const HOST = "0.0.0.0";
 async function callLLM(model, systemPrompt, userPrompt) {
   const omniGatewayUrl = process.env.OMNIROUTE_URL || 'https://gateway.gtrendsnow.com/v1/chat/completions';
   const apiKey = process.env.OMNIROUTE_API_KEY || 'sk-114afa90af2eef95-9170ad-c27ac173';
-  const targetModel = model || 'auto/best-fast';
+  const targetModel = model || 'gemini/gemini-2.5-flash';
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 second timeout for deep audits
+  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
 
   try {
     const response = await fetch(omniGatewayUrl, {
