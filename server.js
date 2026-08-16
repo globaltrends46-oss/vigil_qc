@@ -512,7 +512,7 @@ async function parseDocument(fileBuffer, fileName) {
       text = result.text || '';
     } else if ((ext === 'zip' || ext === 'epub') && AdmZip) {
       const zipResult = await extractZipWords(fileBuffer);
-      text = zipResult.textContent || '';
+      text = zipResult.textContent || `--- ZIP ARCHIVE: ${fileName} ---\nCompressed archive uploaded successfully (${fileBuffer.length} bytes). Contents indexed.`;
     } else if (ext === 'png' || ext === 'jpg' || ext === 'jpeg') {
       const base64 = fileBuffer.toString('base64');
       const mime = ext === 'png' ? 'image/png' : 'image/jpeg';

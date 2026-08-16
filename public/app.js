@@ -273,15 +273,26 @@ createProjectForm.addEventListener('submit', async (e) => {
   const briefText = document.getElementById('form-brief-text').value.trim();
   const files = Array.from(formBriefFiles.files || []);
 
+  // Validate: must have at least a file or text
+  if (!briefText && files.length === 0) {
+    createTaskError.textContent = 'ERR: PLEASE ATTACH A BRIEF FILE OR PASTE TEXT INSTRUCTIONS.';
+    createTaskError.classList.remove('hidden');
+    createTaskLoading.classList.add('hidden');
+    btnSubmitProject.disabled = false;
+    btnSubmitProject.textContent = 'SUBMIT PROJECT GUIDELINES';
+    return;
+  }
+
   try {
-    // 1. Create project task with text guidelines and attached reference files
+    // 1. Create project task - send text + ALL files together in one request
     const initialFormData = new FormData();
     initialFormData.append('task_code', taskCode);
     if (briefText) {
       initialFormData.append('brief_text', briefText);
     }
+    // Append each file with the field name 'brief_file' (matches server upload.any())
     files.forEach((f) => {
-      initialFormData.append('brief_files', f);
+      initialFormData.append('brief_file', f);
     });
 
     const res = await fetch(`${API_BASE}/api/tasks`, {
@@ -307,24 +318,7 @@ createProjectForm.addEventListener('submit', async (e) => {
       throw new Error(errMsg);
     }
 
-    // 2. Upload any remaining supplementary brief files sequentially if needed
-    if (files.length > 1) {
-      for (let i = 1; i < files.length; i++) {
-        btnSubmitProject.textContent = `ANALYZING FILE ${i + 1}/${files.length}... KINDLY WAIT`;
-        const fileFormData = new FormData();
-        fileFormData.append('brief_file', files[i]);
-
-        try {
-          await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(taskCode)}/upload`, {
-            method: 'POST',
-            headers: { 'X-User-Email': currentUserEmail },
-            body: fileFormData
-          });
-        } catch (uploadErr) {
-          console.warn(`Sequential file upload warning for ${files[i].name}:`, uploadErr.message);
-        }
-      }
-    }
+    // 2. No secondary upload needed - all files already sent in step 1
 
     createTaskSuccess.classList.remove('hidden');
     await loadTasksList(taskCode);
