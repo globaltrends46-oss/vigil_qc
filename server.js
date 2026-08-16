@@ -954,13 +954,15 @@ async function callOpenRouter(model, systemPrompt, userPrompt) {
 async function runConsensusEvaluation(brief, text, isRework, previousReport = '', historicalOverridesText = '') {
   // Split guidelines to extract NotebookLM suggested course of action
   const briefParts = brief.split('\n\n---\n\n# AI EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION\n\n');
-  const originalBrief = briefParts[0];
-  const notebookLMSuggestions = briefParts.length > 1 ? briefParts[1] : "None available.";
+  const originalBrief = (briefParts[0] || '').substring(0, 12000);
+  const notebookLMSuggestions = briefParts.length > 1 ? briefParts[1].substring(0, 6000) : "None available.";
+  const cleanSubmissionText = (text || '').substring(0, 10000);
 
   // ==========================================
   // VIGIL X CRITIC 1: COMPLIANCE & SCOPE AUDITOR (Lens: 💼 Compliance)
   // ==========================================
   const sys1 = `You are VIGIL X Critic 1: Compliance, Authority & Scope Auditor (Lens: 💼 Compliance).
+Always respond in English.
 Your golden rule: Judge the submission against the actual brief and evidence given.
 
 Your audit covers:
@@ -980,6 +982,7 @@ Every flagged issue must state: Exact Location, Why it loses marks, What to chan
   // VIGIL X CRITIC 2: CRITICAL QUALITY & DEPTH AUDITOR (Lens: ⭐ Quality)
   // ==========================================
   const sys2 = `You are VIGIL X Critic 2: Critical Depth, Structure & Quality Auditor (Lens: ⭐ Quality).
+Always respond in English.
 Your job: Determine depth over presence and identify the fastest route to distinction quality (90+).
 
 Your audit covers:
@@ -999,6 +1002,7 @@ Tag findings with confidence (🟢/🟡). Provide clear "Replace → With" examp
   // VIGIL X CRITIC 3: CITATIONS, DATA & INTEGRITY AUDITOR (Lens: 🛡️ Integrity)
   // ==========================================
   const sys3 = `You are VIGIL X Critic 3: Citations, Data & Numerical Integrity Auditor (Lens: 🛡️ Integrity).
+Always respond in English.
 Your job: Strict factual, numerical, and source integrity verification.
 
 Your audit covers:
@@ -1022,13 +1026,13 @@ You are evaluating a RESUBMISSION. Compare the revised file against the previous
 Verify whether previous defects are RESOLVED, STILL OPEN, or REGRESSED, and identify any newly introduced issues.
 
 === PREVIOUS FORENSIC AUDIT REPORT ===
-${previousReport}
+${(previousReport || '').substring(0, 8000)}
 
 === HISTORICAL OVERRIDES & TEAM LEAD NOTES ===
-${historicalOverridesText}
+${(historicalOverridesText || '').substring(0, 2000)}
 
 === REVISED SUBMISSION TEXT ===
-${text}
+${cleanSubmissionText}
 
 Deliver your complete Critic findings with location, why it matters, and exact fix.`;
   } else {
@@ -1042,32 +1046,32 @@ ${originalBrief}
 === NOTEBOOKLM / VIGIL-B EDITORIAL GUIDANCE & SUGGESTED COURSE OF ACTION ===
 ${notebookLMSuggestions}
 
-${historicalOverridesText}
+${(historicalOverridesText || '').substring(0, 2000)}
 
 === SUBMISSION TO AUDIT ===
-${text}
+${cleanSubmissionText}
 
 Deliver your complete Critic findings with location, why it matters, and exact fix.`;
   }
 
   // Fire parallel Critics via OmniRoute Gateway
-  console.log("Triggering 3 VIGIL X Critics in parallel via OmniRoute Gateway (gemini/gemini-2.5-flash)...");
+  console.log("Triggering 3 VIGIL X Critics in parallel via OmniRoute Gateway...");
 
-  const p1 = callLLM("gemini/gemini-2.5-flash", sys1, userPrompt)
+  const p1 = callLLM("hf/Qwen/Qwen2.5-7B-Instruct", sys1, userPrompt)
     .then(text => ({ text, modelName: "VIGIL X Critic 1 (Compliance Auditor)" }))
     .catch(err => {
       console.warn("Critic 1 OmniRoute call failed:", err.message);
       return { text: "Critic 1 compliance analysis: Brief compliance check passed standard parameters.", modelName: "VIGIL X Fallback" };
     });
 
-  const p2 = callLLM("gemini/gemini-2.5-flash", sys2, userPrompt)
+  const p2 = callLLM("hf/Qwen/Qwen2.5-7B-Instruct", sys2, userPrompt)
     .then(text => ({ text, modelName: "VIGIL X Critic 2 (Quality & Depth Auditor)" }))
     .catch(err => {
       console.warn("Critic 2 OmniRoute call failed:", err.message);
       return { text: "Critic 2 quality analysis: Document structure and flow evaluated.", modelName: "VIGIL X Fallback" };
     });
 
-  const p3 = callLLM("gemini/gemini-2.5-flash", sys3, userPrompt)
+  const p3 = callLLM("hf/Qwen/Qwen2.5-7B-Instruct", sys3, userPrompt)
     .then(text => ({ text, modelName: "VIGIL X Critic 3 (Citations & Integrity Auditor)" }))
     .catch(err => {
       console.warn("Critic 3 OmniRoute call failed:", err.message);
@@ -1187,8 +1191,8 @@ Compile the consolidated authoritative VIGIL X Report based strictly on the Mast
 `;
 
   try {
-    console.log("Synthesizing VIGIL X Master Report via OmniRoute Gateway (gemini/gemini-2.5-flash)...");
-    const masterRes = await callLLM("gemini/gemini-2.5-flash", sysMaster, userMaster);
+    console.log("Synthesizing VIGIL X Master Report via OmniRoute Gateway (hf/Qwen/Qwen2.5-7B-Instruct)...");
+    const masterRes = await callLLM("hf/Qwen/Qwen2.5-7B-Instruct", sysMaster, userMaster);
     return masterRes + `\n\n---\n\n*VIGIL X Universal Quality Audit complete — Synthesized across 3 Specialist Critics and Master Judge.*`;
   } catch (err) {
     console.warn("Master Supervisor OmniRoute failed, falling back to Direct Gemini:", err.message);
