@@ -283,9 +283,22 @@ createProjectForm.addEventListener('submit', async (e) => {
     return;
   }
 
+  // Check total file size — Hostinger proxy limit is ~8MB per request
+  const MAX_UPLOAD_BYTES = 8 * 1024 * 1024; // 8MB
+  const oversizedFiles = files.filter(f => f.size > MAX_UPLOAD_BYTES);
+  const validFiles = files.filter(f => f.size <= MAX_UPLOAD_BYTES);
+
+  // Build placeholder text for oversized files (too large to base64 encode)
+  let oversizePlaceholder = '';
+  if (oversizedFiles.length > 0) {
+    oversizePlaceholder = oversizedFiles.map(f =>
+      `=== BRIEF FILE: ${f.name} (${(f.size/1024/1024).toFixed(1)}MB) ===\n[File too large to upload directly. VIGIL-B will process based on filename context.]`
+    ).join('\n\n');
+  }
+
   try {
-    // Read all files as base64 to send as JSON (bypasses proxy multipart restrictions)
-    const filePayloads = await Promise.all(files.map(f => new Promise((resolve, reject) => {
+    // Read valid files as base64 JSON (bypasses proxy multipart restrictions)
+    const filePayloads = await Promise.all(validFiles.map(f => new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve({
         name: f.name,
@@ -298,9 +311,11 @@ createProjectForm.addEventListener('submit', async (e) => {
     })));
 
     // 1. Create project task — send as JSON with base64 files
+    // Merge oversized file placeholders into brief_text so task is always created
+    const combinedBriefText = [briefText, oversizePlaceholder].filter(Boolean).join('\n\n');
     const payload = {
       task_code: taskCode,
-      brief_text: briefText || '',
+      brief_text: combinedBriefText,
       files: filePayloads
     };
 
