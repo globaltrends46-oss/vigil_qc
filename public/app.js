@@ -508,10 +508,16 @@ async function executeQC(isRework) {
           if (checkRes.ok) {
             const allTasks = await checkRes.json();
             const currentTask = allTasks.find(t => t.task_code === pollTaskCode);
-            if (currentTask && currentTask.qc_log_payload) {
-              // Check if evaluation finished (contains score or VIGIL Report and no longer ends with ⏳)
               const payload = currentTask.qc_log_payload;
-              const isFinished = !payload.endsWith('seconds.') && (payload.includes('VIGIL Score') || payload.includes('VIGIL FORENSIC AUDIT REPORT'));
+              const isStillProcessing = payload.includes('evaluating the submission in real-time') && payload.endsWith('seconds.');
+              const isFinished = !isStillProcessing && (
+                payload.includes('WHERE YOU STAND') || 
+                payload.includes('VIGIL X') || 
+                payload.includes('MUST-FIX') ||
+                payload.includes('SCORE:') || 
+                payload.includes('Score:') || 
+                payload.includes('VIGIL FORENSIC AUDIT REPORT')
+              );
               
               reportViewContent.innerHTML = formatMarkdown(payload);
 
