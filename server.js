@@ -264,37 +264,65 @@ Do not output any markdown formatting, explanation, or comments. Just the raw JS
 async function extractZipWords(buffer) {
   let totalWords = 0;
   let textParts = [];
-  const zip = new AdmZip(buffer);
-  const entries = zip.getEntries();
+  try {
+    const zip = new AdmZip(buffer);
+    const entries = zip.getEntries();
 
-  for (const entry of entries) {
-    if (entry.isDirectory) continue;
-    const name = entry.entryName.toLowerCase();
-    const fileExt = name.split('.').pop();
-    const fileBuffer = entry.getData();
+    for (const entry of entries) {
+      if (entry.isDirectory) continue;
+      const name = entry.entryName.toLowerCase();
+      const fileExt = name.split('.').pop();
+      const fileBuffer = entry.getData();
 
-    if (['txt', 'md', 'py', 'js', 'html', 'css', 'json', 'csv', 'xml', 'ts', 'go', 'rs', 'c', 'cpp'].includes(fileExt)) {
-      const text = fileBuffer.toString('utf8');
-      totalWords += countWords(text);
-      textParts.push(`--- FILE: ${entry.entryName} ---\n${text}`);
-    } else if (fileExt === 'docx') {
-      try {
-        const result = await mammoth.extractRawText({ buffer: fileBuffer });
-        totalWords += countWords(result.value);
-        textParts.push(`--- FILE: ${entry.entryName} ---\n${result.value}`);
-      } catch (err) {
-        console.error(`Error parsing internal docx: ${entry.entryName}`, err);
-      }
-    } else if (fileExt === 'pdf') {
-      try {
-        const result = await pdfParse(fileBuffer);
-        totalWords += countWords(result.text);
-        textParts.push(`--- FILE: ${entry.entryName} ---\n${result.text}`);
-      } catch (err) {
-        console.error(`Error parsing internal pdf: ${entry.entryName}`, err);
+      if (['txt', 'md', 'py', 'js', 'html', 'css', 'json', 'csv', 'xml', 'ts', 'go', 'rs', 'c', 'cpp', 'sh', 'rtf', 'log', 'sql'].includes(fileExt)) {
+        const text = fileBuffer.toString('utf8');
+        totalWords += countWords(text);
+        textParts.push(`--- FILE: ${entry.entryName} ---\n${text}`);
+      } else if (fileExt === 'docx') {
+        try {
+          if (mammoth) {
+            const result = await mammoth.extractRawText({ buffer: fileBuffer });
+            totalWords += countWords(result.value);
+            textParts.push(`--- FILE: ${entry.entryName} ---\n${result.value}`);
+          }
+        } catch (err) {
+          console.error(`Error parsing internal docx: ${entry.entryName}`, err);
+        }
+      } else if (fileExt === 'pdf') {
+        try {
+          if (pdfParse) {
+            const result = await pdfParse(fileBuffer);
+            totalWords += countWords(result.text);
+            textParts.push(`--- FILE: ${entry.entryName} ---\n${result.text}`);
+          }
+        } catch (err) {
+          console.error(`Error parsing internal pdf: ${entry.entryName}`, err);
+        }
+      } else if (fileExt === 'pptx' || fileExt === 'ppt') {
+        try {
+          const text = extractPptxText(fileBuffer);
+          totalWords += countWords(text);
+          textParts.push(`--- FILE: ${entry.entryName} ---\n${text}`);
+        } catch (err) {}
+      } else if (fileExt === 'xlsx' || fileExt === 'xls') {
+        try {
+          const text = extractXlsxText(fileBuffer) || fileBuffer.toString('utf8');
+          totalWords += countWords(text);
+          textParts.push(`--- FILE: ${entry.entryName} ---\n${text}`);
+        } catch (err) {}
       }
     }
+
+    if (textParts.length === 0 && entries.length > 0) {
+      const fileList = entries.map(e => e.entryName).filter(Boolean).join(', ');
+      textParts.push(`--- ZIP ARCHIVE FILE LISTING ---\nArchive contains ${entries.length} files: ${fileList}`);
+      totalWords = countWords(textParts[0]);
+    }
+  } catch (zipErr) {
+    console.warn(`Zip parsing warning: ${zipErr.message}`);
+    textParts.push(`--- ZIP ARCHIVE ATTACHMENT ---\nCompressed Zip Archive (Size: ${buffer.length} bytes)`);
   }
+
   return { wordCount: totalWords, textContent: textParts.join('\n\n') };
 }
 

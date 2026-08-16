@@ -271,20 +271,18 @@ createProjectForm.addEventListener('submit', async (e) => {
   if (!taskCode) return;
 
   const briefText = document.getElementById('form-brief-text').value.trim();
-  const omniKeyInput = document.getElementById('form-omniroute-key');
-  const omniKey = omniKeyInput ? omniKeyInput.value.trim() : '';
   const files = Array.from(formBriefFiles.files || []);
 
   try {
-    // 1. Create project task with lightweight text guidelines (0 files in initial payload for 0.1s response)
+    // 1. Create project task with text guidelines and attached reference files
     const initialFormData = new FormData();
     initialFormData.append('task_code', taskCode);
     if (briefText) {
       initialFormData.append('brief_text', briefText);
     }
-    if (omniKey) {
-      initialFormData.append('omniroute_api_key', omniKey);
-    }
+    files.forEach((f) => {
+      initialFormData.append('brief_files', f);
+    });
 
     const res = await fetch(`${API_BASE}/api/tasks`, {
       method: 'POST',
@@ -309,20 +307,22 @@ createProjectForm.addEventListener('submit', async (e) => {
       throw new Error(errMsg);
     }
 
-    // 2. Upload ALL attached brief files sequentially 1-by-1 (tiny 1MB individual requests)
-    for (let i = 0; i < files.length; i++) {
-      btnSubmitProject.textContent = `ANALYZING FILE ${i + 1}/${files.length}... KINDLY WAIT`;
-      const fileFormData = new FormData();
-      fileFormData.append('brief_file', files[i]);
+    // 2. Upload any remaining supplementary brief files sequentially if needed
+    if (files.length > 1) {
+      for (let i = 1; i < files.length; i++) {
+        btnSubmitProject.textContent = `ANALYZING FILE ${i + 1}/${files.length}... KINDLY WAIT`;
+        const fileFormData = new FormData();
+        fileFormData.append('brief_file', files[i]);
 
-      try {
-        await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(taskCode)}/upload`, {
-          method: 'POST',
-          headers: { 'X-User-Email': currentUserEmail },
-          body: fileFormData
-        });
-      } catch (uploadErr) {
-        console.warn(`Sequential file upload warning for ${files[i].name}:`, uploadErr.message);
+        try {
+          await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(taskCode)}/upload`, {
+            method: 'POST',
+            headers: { 'X-User-Email': currentUserEmail },
+            body: fileFormData
+          });
+        } catch (uploadErr) {
+          console.warn(`Sequential file upload warning for ${files[i].name}:`, uploadErr.message);
+        }
       }
     }
 
